@@ -146,10 +146,12 @@ def get_video_desc(url: str) -> str:
     )
     if r.returncode == 0 and r.stdout.strip():
         desc = r.stdout.strip()
-        if len(desc) > 300:
-            desc = desc[:300]
+        # 取第一段（第一个空行前）
+        first_para = desc.split("\n\n")[0].strip()
+        if len(first_para) > 400:
+            first_para = first_para[:400]
         # 翻译成中文
-        prompt = f"把下面的英文视频简介翻译成中文，自然流畅，不超过150字，只输出中文：\n{desc}"
+        prompt = f"把下面的英文视频简介翻译成中文，自然流畅，不超过150字，只输出中文：\n{first_para}"
         t = subprocess.run(
             ["hermes", "chat", "-q", prompt, "-Q"],
             capture_output=True, text=True, timeout=60
