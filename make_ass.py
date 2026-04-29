@@ -123,6 +123,11 @@ def build_ass(en_entries: list[dict], zh_entries: list[dict], width: int = 1920,
 
     lines = [build_ass_header(width, height)]
     for en in en_entries:
+        # 跳过时间无效的行（start >= end）
+        en_start_ms = ass_time_to_ms(en['start'])
+        en_end_ms   = ass_time_to_ms(en['end'])
+        if en_start_ms >= en_end_ms:
+            continue
         zh = zh_map.get(en['index'])
         en_line = (
             f"Dialogue: 0,{en['start']},{en['end']},English,,0,0,0,,{ass_text(en['text'])}"

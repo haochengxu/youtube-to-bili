@@ -12,3 +12,8 @@ cookies.json
 *.ass
 __pycache__/
 *.pyc
+# 运行时数据
+queue.json
+channels.json
+data/
+*.log

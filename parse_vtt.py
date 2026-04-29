@@ -13,6 +13,7 @@ YouTube VTT 格式示例：
 
 import sys
 import re
+import html
 from pathlib import Path
 
 
@@ -88,7 +89,7 @@ def parse_vtt(text: str) -> list[dict]:
                 current_ts = vtt_ts_to_ms(ts_match.group(1))
             else:
                 # 文本片段：去掉 HTML 标签，提取词
-                clean = tag_pattern.sub('', token).strip()
+                clean = html.unescape(tag_pattern.sub('', token)).strip()
                 for w in clean.split():
                     w = w.strip()
                     if w:
