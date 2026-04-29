@@ -159,6 +159,11 @@ def upload_to_bili(video_file: str, title: str, video_id: str) -> Optional[str]:
 
     # 从输出里提取 bvid
     for line in (r.stdout + r.stderr).splitlines():
+        if "'bvid'" in line:
+            import re
+            m = re.search(r"'bvid': '(BV\w+)'", line)
+            if m:
+                return m.group(1)
         if "BV" in line:
             import re
             m = re.search(r"BV\w+", line)
