@@ -138,15 +138,32 @@ def run_pipeline(url: str) -> Optional[str]:
     return None
 
 
-def upload_to_bili(video_file: str, title: str, video_id: str) -> Optional[str]:
+def get_video_desc(url: str) -> str:
+    """抓 YouTube 视频简介（前200字）"""
+    r = subprocess.run(
+        ["yt-dlp", "--get-description", "--no-warnings", "--proxy", PROXY, url],
+        capture_output=True, text=True, timeout=30
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        desc = r.stdout.strip()
+        if len(desc) > 200:
+            desc = desc[:200] + "..."
+        return desc
+    return ""
+
+
+def upload_to_bili(video_file: str, title: str, video_id: str, source_url: str = "") -> Optional[str]:
     """上传到 B 站，返回 bvid"""
     log(f"📤 上传：{title}")
+    desc = get_video_desc(source_url) if source_url else ""
     r = subprocess.run(
         [
             sys.executable,
             str(SCRIPT_DIR / "bili_upload_v2.py"),
             video_file,
             "--title", title,
+            "--desc", desc,
+            "--source", source_url,
         ],
         cwd=SCRIPT_DIR,
         capture_output=True,
@@ -208,7 +225,7 @@ def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str, done:
     )
     video_id = video_id_cmd.stdout.strip()
 
-    bvid = upload_to_bili(out_file, bili_title, video_id)
+    bvid = upload_to_bili(out_file, bili_title, video_id, source_url=url)
     if bvid:
         save_history(video_id, bvid, bili_title)
         return True
@@ -251,7 +268,7 @@ def main():
                 capture_output=True, text=True, timeout=30
             )
             video_id = video_id_cmd.stdout.strip()
-            bvid = upload_to_bili(out_file, bili_title, video_id)
+            bvid = upload_to_bili(out_file, bili_title, video_id, source_url=url)
             if bvid:
                 save_history(video_id, bvid, bili_title)
                 log(f"✅ 完成：{bvid}")
