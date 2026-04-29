@@ -139,16 +139,24 @@ def run_pipeline(url: str) -> Optional[str]:
 
 
 def get_video_desc(url: str) -> str:
-    """抓 YouTube 视频简介（前200字）"""
+    """抓 YouTube 视频简介，翻译成中文（前200字）"""
     r = subprocess.run(
         ["yt-dlp", "--get-description", "--no-warnings", "--proxy", PROXY, url],
         capture_output=True, text=True, timeout=30
     )
     if r.returncode == 0 and r.stdout.strip():
         desc = r.stdout.strip()
-        if len(desc) > 200:
-            desc = desc[:200] + "..."
-        return desc
+        if len(desc) > 300:
+            desc = desc[:300]
+        # 翻译成中文
+        prompt = f"把下面的英文视频简介翻译成中文，自然流畅，不超过150字，只输出中文：\n{desc}"
+        t = subprocess.run(
+            ["hermes", "chat", "-q", prompt, "-Q"],
+            capture_output=True, text=True, timeout=60
+        )
+        if t.returncode == 0 and t.stdout.strip():
+            return t.stdout.strip()
+        return desc  # 翻译失败就用原文
     return ""
 
 
