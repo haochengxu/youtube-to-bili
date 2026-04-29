@@ -1,0 +1,14 @@
+downloads/
+subtitles/
+output/
+uploaded/
+cookies.json
+*.mp4
+*.m4a
+*.mkv
+*.webm
+*.vtt
+*.srt
+*.ass
+__pycache__/
+*.pyc
