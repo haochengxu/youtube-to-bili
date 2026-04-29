@@ -90,7 +90,7 @@ def build_ass_header(width: int, height: int) -> str:
         en_margin, zh_margin = 100, 50
     else:
         # 横屏：中文在下，英文在上
-        en_size, zh_size = 28, 32
+        en_size, zh_size = 34, 40
         en_margin, zh_margin = 65, 20
 
     return f"""\

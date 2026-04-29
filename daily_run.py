@@ -23,6 +23,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 SCRIPT_DIR = Path(__file__).parent
 HISTORY_FILE = SCRIPT_DIR / "uploaded" / "history.json"
@@ -92,14 +93,17 @@ def get_playlist_videos(url: str, max_items: int = 50) -> list:
         if len(parts) >= 2:
             vid_id = parts[0].strip()
             title = parts[1].strip()
-            duration = float(parts[2]) if len(parts) >= 3 and parts[2].strip() else 0
+            try:
+                duration = float(parts[2]) if len(parts) >= 3 and parts[2].strip() not in ("", "NA", "None") else 0
+            except ValueError:
+                duration = 0
             videos.append({"id": vid_id, "title": title, "duration": duration})
     log(f"  获取到 {len(videos)} 个视频")
     return videos  # yt-dlp 默认顺序 = 列表顺序；播放列表通常新→旧
 
 
 def pick_next(videos: list, done: set,
-              min_dur: float = 0, max_dur: float = float("inf")) -> dict | None:
+              min_dur: float = 0, max_dur: float = float("inf")) -> Optional[dict]:
     for v in videos:
         if v["id"] in done:
             continue
@@ -109,7 +113,7 @@ def pick_next(videos: list, done: set,
     return None
 
 
-def run_pipeline(url: str) -> str | None:
+def run_pipeline(url: str) -> Optional[str]:
     """运行 pipeline.sh，返回输出视频路径（output/<video_id>.mp4）"""
     log(f"▶️  运行 pipeline.sh: {url}")
     r = subprocess.run(
@@ -134,7 +138,7 @@ def run_pipeline(url: str) -> str | None:
     return None
 
 
-def upload_to_bili(video_file: str, title: str, video_id: str) -> str | None:
+def upload_to_bili(video_file: str, title: str, video_id: str) -> Optional[str]:
     """上传到 B 站，返回 bvid"""
     log(f"📤 上传：{title}")
     r = subprocess.run(
