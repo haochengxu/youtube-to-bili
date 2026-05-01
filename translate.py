@@ -12,7 +12,7 @@ import subprocess
 import os
 from pathlib import Path
 
-BATCH_SIZE = 30  # 每批翻译的字幕条数
+BATCH_SIZE = 80  # 每批翻译的字幕条数
 
 
 def parse_srt(text: str) -> list[dict]:

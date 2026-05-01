@@ -25,6 +25,7 @@ URL="$1"
 log "▶ 步骤 1/5：下载视频和字幕"
 
 yt-dlp \
+  --cookies-from-browser chrome \
   --write-subs \
   --write-auto-subs \
   --sub-langs "en.*" \
@@ -34,15 +35,17 @@ yt-dlp \
   "$URL" || true   # 字幕可能没有，先不 fatal
 
 VIDEO_FILE=$(yt-dlp \
+  --cookies-from-browser chrome \
   --get-filename \
   -o "$DOWNLOADS/%(id)s.%(ext)s" \
   "$URL" 2>/dev/null)
 
-VIDEO_ID=$(yt-dlp --get-id "$URL" 2>/dev/null)
+VIDEO_ID=$(yt-dlp --cookies-from-browser chrome --get-id "$URL" 2>/dev/null)
 log "视频 ID: $VIDEO_ID"
 
 log "下载视频..."
 yt-dlp \
+  --cookies-from-browser chrome \
   -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
   -o "$DOWNLOADS/%(id)s.%(ext)s" \
   "$URL"

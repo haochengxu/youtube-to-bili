@@ -5,6 +5,7 @@ Usage: python3 bili_upload_v2.py <video_path> --title "title" --desc "desc" --ta
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import argparse
 
@@ -56,7 +57,7 @@ async def upload(args):
         "subtitles": {"lan": "", "open": 0},
         "tag": args.tag or "英语学习,AI",
         "tid": args.tid,
-        "title": args.title,
+        "title": args.title[:80],
         "up_close_danmaku": False,
         "up_close_reply": False,
         "up_selection_reply": False,
@@ -64,15 +65,26 @@ async def upload(args):
         "dtime": 0,
     }
     
-    # Prepare cover
+    # 生成封面（截取视频第5秒）
     cover_path = args.cover if hasattr(args, 'cover') and args.cover else ""
+    if not cover_path:
+        cover_path = args.video.replace(".mp4", "_cover.jpg")
+        subprocess.run([
+            "ffmpeg", "-y", "-ss", "5", "-i", args.video,
+            "-vframes", "1", "-update", "1", cover_path
+        ], capture_output=True)
+        if not os.path.exists(cover_path):
+            cover_path = ""
     
-    uploader = video_uploader.VideoUploader(
+    uploader_kwargs = dict(
         pages=[page],
         meta=meta,
         credential=credential,
-        cover=cover_path if cover_path else None,
     )
+    if cover_path:
+        uploader_kwargs["cover"] = cover_path
+
+    uploader = video_uploader.VideoUploader(**uploader_kwargs)
     
     @uploader.on("__ALL__")
     async def on_event(data):

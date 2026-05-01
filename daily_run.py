@@ -79,6 +79,7 @@ def get_playlist_videos(url: str, max_items: int = 50) -> list:
         "--playlist-end", str(max_items),
         "--print", "%(id)s\t%(title)s\t%(duration)s",
         "--no-warnings",
+        "--cookies-from-browser", "chrome",
         "--proxy", PROXY,
         url,
     ]
@@ -127,7 +128,7 @@ def run_pipeline(url: str) -> Optional[str]:
 
     # 找生成的 mp4
     video_id_cmd = subprocess.run(
-        ["yt-dlp", "--get-id", "--no-warnings", "--proxy", PROXY, url],
+        ["yt-dlp", "--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
         capture_output=True, text=True, timeout=30
     )
     video_id = video_id_cmd.stdout.strip()
@@ -141,7 +142,7 @@ def run_pipeline(url: str) -> Optional[str]:
 def get_video_desc(url: str) -> str:
     """抓 YouTube 视频简介，翻译成中文（前200字）"""
     r = subprocess.run(
-        ["yt-dlp", "--get-description", "--no-warnings", "--proxy", PROXY, url],
+        ["yt-dlp", "--get-description", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
         capture_output=True, text=True, timeout=30
     )
     if r.returncode == 0 and r.stdout.strip():
@@ -230,7 +231,7 @@ def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str, done:
 
     # 获取 video_id
     video_id_cmd = subprocess.run(
-        ["yt-dlp", "--get-id", "--no-warnings", "--proxy", PROXY, url],
+        ["yt-dlp", "--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
         capture_output=True, text=True, timeout=30
     )
     video_id = video_id_cmd.stdout.strip()
@@ -263,7 +264,7 @@ def main():
         else:
             # 自动获取标题并翻译
             r = subprocess.run(
-                ["yt-dlp", "--get-title", "--no-warnings", "--proxy", PROXY, url],
+                ["yt-dlp", "--get-title", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
                 capture_output=True, text=True, timeout=30
             )
             en_title = r.stdout.strip()
@@ -274,7 +275,7 @@ def main():
         out_file = run_pipeline(url)
         if out_file:
             video_id_cmd = subprocess.run(
-                ["yt-dlp", "--get-id", "--no-warnings", "--proxy", PROXY, url],
+                ["yt-dlp", "--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
                 capture_output=True, text=True, timeout=30
             )
             video_id = video_id_cmd.stdout.strip()
