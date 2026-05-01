@@ -1,0 +1,11 @@
+{
+  "channels": [
+    {
+      "name": "Sounds True - Michael Singer Podcast",
+      "channel_url": "https://www.youtube.com/channel/UCNROVE3vJ0UXSYoObpC8CcQ",
+      "playlist_url": "https://www.youtube.com/playlist?list=PLyOuAoSmZkKoESr2acNWwhznusbBkKXsT",
+      "bili_folder": "Michael Singer Podcast",
+      "enabled": true
+    }
+  ]
+}

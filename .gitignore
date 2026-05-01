@@ -1,7 +1,6 @@
 downloads/
 subtitles/
 output/
-uploaded/
 cookies.json
 *.mp4
 *.m4a
@@ -14,6 +13,5 @@ __pycache__/
 *.pyc
 # 运行时数据
 queue.json
-channels.json
 data/
 *.log

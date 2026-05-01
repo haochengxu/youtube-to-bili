@@ -16,7 +16,7 @@ youtube-to-bili/
 ├── downloads/           # 下载的视频（不入 git）
 ├── subtitles/           # 字幕文件（不入 git）
 ├── output/              # 压制后视频（不入 git）
-└── uploaded/            # 上传记录 history.json（不入 git）
+├── uploaded/history.json # 已上传记录（入 git）
 ```
 
 ## 依赖
@@ -58,8 +58,9 @@ B站上传依赖 `cookies.json`（从浏览器导出，Netscape 格式）。
 | 参数 | 位置 | 默认值 |
 |------|------|--------|
 | 代理 | `pipeline.sh` / `translate.py` | `http://127.0.0.1:7897` |
-| 翻译批次大小 | `translate.py` BATCH_SIZE | 30 |
-| 字幕字号 | `make_ass.py` | EN=28, ZH=32 |
+| 翻译批次大小 | `translate.py` BATCH_SIZE | 80 |
+| 字幕字号（横屏） | `make_ass.py` | EN=44, ZH=52 |
+| 字幕字号（竖屏） | `make_ass.py` | EN=26, ZH=30 |
 | 视频分辨率 | pipeline.sh yt-dlp | 1280x720 |
 
 ## 已上传视频
