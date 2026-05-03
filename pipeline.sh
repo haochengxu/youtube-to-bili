@@ -14,6 +14,14 @@ OUTPUT="$SCRIPT_DIR/output"
 # Homebrew 路径（Apple Silicon）
 export PATH="/opt/homebrew/bin:$PATH"
 
+# nvm node 路径（yt-dlp 需要 node 来解 YouTube n challenge）
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh" 2>/dev/null
+export PATH="/usr/local/bin:$PATH"
+
+# yt-dlp 统一参数
+YTDLP="python3.11 -m yt_dlp --js-runtimes node --remote-components ejs:github"
+
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
 err()  { echo "[ERROR] $*" >&2; exit 1; }
 
@@ -24,28 +32,31 @@ URL="$1"
 # ── 步骤 1: 下载视频 + 字幕 ───────────────────
 log "▶ 步骤 1/5：下载视频和字幕"
 
-yt-dlp \
+$YTDLP \
   --cookies-from-browser chrome \
+  --proxy http://127.0.0.1:7890 \
   --write-subs \
   --write-auto-subs \
-  --sub-langs "en.*" \
-  --sub-format "vtt" \
+  --sub-langs "en" \
+  --sub-format "srt" \
   --skip-download \
   -o "$DOWNLOADS/%(id)s.%(ext)s" \
   "$URL" || true   # 字幕可能没有，先不 fatal
 
-VIDEO_FILE=$(yt-dlp \
+VIDEO_FILE=$($YTDLP \
   --cookies-from-browser chrome \
+  --proxy http://127.0.0.1:7890 \
   --get-filename \
   -o "$DOWNLOADS/%(id)s.%(ext)s" \
   "$URL" 2>/dev/null)
 
-VIDEO_ID=$(yt-dlp --cookies-from-browser chrome --get-id "$URL" 2>/dev/null)
+VIDEO_ID=$($YTDLP --cookies-from-browser chrome --proxy http://127.0.0.1:7890 --get-id "$URL" 2>/dev/null)
 log "视频 ID: $VIDEO_ID"
 
 log "下载视频..."
-yt-dlp \
+$YTDLP \
   --cookies-from-browser chrome \
+  --proxy http://127.0.0.1:7890 \
   -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
   -o "$DOWNLOADS/%(id)s.%(ext)s" \
   "$URL"
@@ -61,26 +72,30 @@ log "视频文件: $VIDEO_FILE"
 log "▶ 步骤 2/5：检查字幕"
 
 EN_SRT=""
-EN_VTT=""
 
-# 优先查找 VTT（有逐词精确时间戳）
-for _name in "${VIDEO_ID}.en.vtt" "${VIDEO_ID}.en-orig.vtt" "${VIDEO_ID}.en-US.vtt"; do
-  [[ -f "$DOWNLOADS/$_name" ]] && EN_VTT="$DOWNLOADS/$_name" && break
+# 优先查找 SRT
+for _name in "${VIDEO_ID}.en.srt" "${VIDEO_ID}.en-orig.srt" "${VIDEO_ID}.en-US.srt"; do
+  [[ -f "$DOWNLOADS/$_name" ]] && EN_SRT="$DOWNLOADS/$_name" && break
 done
 
-if [[ -n "$EN_VTT" ]]; then
-  log "找到 VTT 字幕: ${EN_VTT}（使用精确逐词时间戳）"
-  python3 "$SCRIPT_DIR/parse_vtt.py" "$EN_VTT" "$SUBTITLES/${VIDEO_ID}.en.srt"
+if [[ -n "$EN_SRT" ]]; then
+  log "找到 SRT 字幕: $EN_SRT"
+  # 合并重叠的时间段（传入视频宽度以自适应字幕长度）
+  VID_W=$(python3 "$SCRIPT_DIR/detect_content_width.py" "$VIDEO_FILE" 2>/dev/null || ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$VIDEO_FILE" 2>/dev/null)
+  VID_W=${VID_W:-1920}
+  log "  实际内容宽度: ${VID_W}px"
+  # 使用 v2 方案：Whisper 词级时间戳 + YouTube 文本
+  python3 "$SCRIPT_DIR/merge_srt_v2.py" "$VIDEO_FILE" "$SUBTITLES/${VIDEO_ID}.en.srt" "$VID_W"
 else
-  # fallback: 找 SRT
-  for _name in "${VIDEO_ID}.en.srt" "${VIDEO_ID}.en-orig.srt" "${VIDEO_ID}.en-US.srt"; do
-    [[ -f "$DOWNLOADS/$_name" ]] && EN_SRT="$DOWNLOADS/$_name" && break
+  # fallback: 找 VTT
+  EN_VTT=""
+  for _name in "${VIDEO_ID}.en.vtt" "${VIDEO_ID}.en-orig.vtt" "${VIDEO_ID}.en-US.vtt"; do
+    [[ -f "$DOWNLOADS/$_name" ]] && EN_VTT="$DOWNLOADS/$_name" && break
   done
 
-  if [[ -n "$EN_SRT" ]]; then
-    log "找到 SRT 字幕（无精确时间戳，将用 merge_srt 合并）: $EN_SRT"
-    cp "$EN_SRT" "$SUBTITLES/${VIDEO_ID}.en.srt"
-    python3 "$SCRIPT_DIR/merge_srt.py" "$SUBTITLES/${VIDEO_ID}.en.srt" "$SUBTITLES/${VIDEO_ID}.en.srt"
+  if [[ -n "$EN_VTT" ]]; then
+    log "找到 VTT 字幕: $EN_VTT"
+    python3 "$SCRIPT_DIR/parse_vtt.py" "$EN_VTT" "$SUBTITLES/${VIDEO_ID}.en.srt"
   else
     log "未找到字幕，使用 Whisper 转录..."
     command -v whisper >/dev/null 2>&1 || err "whisper 未安装，运行: pip install openai-whisper"
@@ -140,6 +155,16 @@ ffmpeg -y \
 
 [[ -f "$OUT_FILE" ]] || err "ffmpeg 压制失败"
 log "✅ 完成！成品视频: $OUT_FILE"
+
+# ── 步骤 6: 上传到 B站 ────────────────────────
+# 自动获取标题、简介、封面，用 bili_upload_v2.py 上传
+EN_TITLE=$($YTDLP --cookies-from-browser chrome --proxy http://127.0.0.1:7890 --get-title "$URL" 2>/dev/null || echo "")
+EN_DESC=$($YTDLP --cookies-from-browser chrome --proxy http://127.0.0.1:7890 --get-description "$URL" 2>/dev/null | head -c 400 || echo "")
+
 log ""
-log "上传到 B站请手动运行（需先扫码登录）："
-log "  biliup upload \"$OUT_FILE\""
+log "上传到 B站（python3 bili_upload_v2.py）："
+log "  标题: $EN_TITLE"
+log "  用法: python3 bili_upload_v2.py \"$OUT_FILE\" --title \"$EN_TITLE\" --desc \"...\" --source \"$URL\""
+log ""
+log "或通过 daily_run.py 自动上传（推荐）："
+log "  python3 daily_run.py --url \"$URL\""
