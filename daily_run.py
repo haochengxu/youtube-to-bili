@@ -29,7 +29,14 @@ SCRIPT_DIR = Path(__file__).parent
 HISTORY_FILE = SCRIPT_DIR / "uploaded" / "history.json"
 
 # 代理
-PROXY = "http://127.0.0.1:7897"
+PROXY = "http://127.0.0.1:7890"
+
+# yt-dlp 基础命令（python3.11 + n challenge 修复）
+YTDLP_BASE = [
+    "python3.11", "-m", "yt_dlp",
+    "--js-runtimes", "node",
+    "--remote-components", "ejs:github",
+]
 
 # 长视频：Michael Singer 播放列表
 LONG_PLAYLIST = "https://www.youtube.com/playlist?list=PLyOuAoSmZkKoESr2acNWwhznusbBkKXsT"
@@ -73,8 +80,7 @@ def save_history(video_id: str, bvid: str, title: str):
 def get_playlist_videos(url: str, max_items: int = 50) -> list:
     """从播放列表获取视频列表（倒序：最新在前）"""
     log(f"获取播放列表：{url}")
-    cmd = [
-        "yt-dlp",
+    cmd = YTDLP_BASE + [
         "--flat-playlist",
         "--playlist-end", str(max_items),
         "--print", "%(id)s\t%(title)s\t%(duration)s",
@@ -128,7 +134,7 @@ def run_pipeline(url: str) -> Optional[str]:
 
     # 找生成的 mp4
     video_id_cmd = subprocess.run(
-        ["yt-dlp", "--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
+        YTDLP_BASE + ["--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
         capture_output=True, text=True, timeout=30
     )
     video_id = video_id_cmd.stdout.strip()
@@ -142,7 +148,7 @@ def run_pipeline(url: str) -> Optional[str]:
 def get_video_desc(url: str) -> str:
     """抓 YouTube 视频简介，翻译成中文（前200字）"""
     r = subprocess.run(
-        ["yt-dlp", "--get-description", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
+        YTDLP_BASE + ["--get-description", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
         capture_output=True, text=True, timeout=30
     )
     if r.returncode == 0 and r.stdout.strip():
@@ -200,8 +206,23 @@ def upload_to_bili(video_file: str, title: str, video_id: str, source_url: str =
     return "BV_UNKNOWN"
 
 
+def clean_youtube_title(title: str, speaker_en: str) -> str:
+    """清理 YouTube 标题：去 hashtag、频道名后缀、重复的演讲者名"""
+    import re
+    # 去掉 hashtag
+    title = re.sub(r'\s*#\S+', '', title).strip()
+    # 去掉常见的 "| xxx Podcast", "| xxx Channel" 等后缀
+    title = re.sub(r'\s*\|[^|]*$', '', title).strip()
+    # 如果标题里已经包含演讲者名，去掉
+    if speaker_en.lower() in title.lower():
+        # 去掉 "Speaker Name - " 或 "Speaker Name: " 前缀
+        title = re.sub(rf'^{re.escape(speaker_en)}\s*[-:–—]\s*', '', title, flags=re.IGNORECASE).strip()
+    return title
+
+
 def make_title(speaker_zh: str, speaker_en: str, en_title: str, zh_title: str) -> str:
     """格式：迈克尔·辛格 Michael Singer｜中文标题 English Title"""
+    en_title = clean_youtube_title(en_title, speaker_en)
     return f"{speaker_zh} {speaker_en}｜{zh_title} {en_title}"
 
 
@@ -231,7 +252,7 @@ def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str, done:
 
     # 获取 video_id
     video_id_cmd = subprocess.run(
-        ["yt-dlp", "--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
+        YTDLP_BASE + ["--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
         capture_output=True, text=True, timeout=30
     )
     video_id = video_id_cmd.stdout.strip()
@@ -264,7 +285,7 @@ def main():
         else:
             # 自动获取标题并翻译
             r = subprocess.run(
-                ["yt-dlp", "--get-title", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
+                YTDLP_BASE + ["--get-title", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
                 capture_output=True, text=True, timeout=30
             )
             en_title = r.stdout.strip()
@@ -275,7 +296,7 @@ def main():
         out_file = run_pipeline(url)
         if out_file:
             video_id_cmd = subprocess.run(
-                ["yt-dlp", "--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
+                YTDLP_BASE + ["--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
                 capture_output=True, text=True, timeout=30
             )
             video_id = video_id_cmd.stdout.strip()

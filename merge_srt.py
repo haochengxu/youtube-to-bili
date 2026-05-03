@@ -120,25 +120,30 @@ def _build_char_time_map(group: list[dict]) -> list[tuple[int, int, int, int]]:
     return mapping
 
 
-def _char_to_ms(char_pos: int, mapping: list[tuple[int, int, int, int]]) -> int:
-    """通过字符位置线性插值估算时间戳(ms)。"""
+def _char_to_entry_start(char_pos: int, mapping: list[tuple[int, int, int, int]]) -> int:
+    """找到 char_pos 所在的 entry，返回该 entry 的 START 时间。"""
     for cs, ce, ts, te in mapping:
         if cs <= char_pos <= ce:
-            length = ce - cs
-            if length <= 0:
-                return ts
-            ratio = (char_pos - cs) / length
-            return int(ts + ratio * (te - ts))
-    # 超出范围：返回最近的时间
+            return ts
     if char_pos <= 0:
         return mapping[0][2]
+    return mapping[-1][2]  # 用 start 而非 end
+
+
+def _char_to_entry_end(char_pos: int, mapping: list[tuple[int, int, int, int]]) -> int:
+    """找到 char_pos 所在的 entry，返回该 entry 的 END 时间。"""
+    for cs, ce, ts, te in mapping:
+        if cs <= char_pos <= ce:
+            return te
+    if char_pos <= 0:
+        return mapping[0][3]
     return mapping[-1][3]
 
 
 def split_group_into_sentences(group: list[dict], max_chars: int = 100, ideal_chars: int = 75) -> list[dict]:
     """
     用 nltk.sent_tokenize 在一个语音段内按自然句子断句。
-    通过字符位置线性插值映射到精确时间戳（解决 YouTube 滚动字幕重叠问题）。
+    时间戳策略：用 entry 的 START 作为句子开始时间（更接近实际说话时间）。
     """
     if not group:
         return []
@@ -149,21 +154,28 @@ def split_group_into_sentences(group: list[dict], max_chars: int = 100, ideal_ch
     # 构建字符→时间映射
     char_map = _build_char_time_map(group)
 
-    sentences = []
+    # 第一遍：收集所有句子及其 start 时间
+    sentence_starts = []  # [(sent_text, char_start_in_text, start_ms)]
     char_pos = 0
-
     for sent_text in raw_sentences:
         sent_text = sent_text.strip()
         if not sent_text:
             continue
-
         sent_start_in_text = full_text.find(sent_text, char_pos)
         if sent_start_in_text == -1:
             sent_start_in_text = char_pos
-        sent_end_in_text = sent_start_in_text + len(sent_text)
+        start_ms = _char_to_entry_start(sent_start_in_text, char_map)
+        sentence_starts.append((sent_text, sent_start_in_text, start_ms))
+        char_pos = sent_start_in_text + len(sent_text)
 
-        start_ms = _char_to_ms(sent_start_in_text, char_map)
-        end_ms = _char_to_ms(sent_end_in_text, char_map)
+    # 第二遍：分配 end 时间 = 下一句的 start（最后一句用 entry 的 end）
+    sentences = []
+    for i, (sent_text, char_start, start_ms) in enumerate(sentence_starts):
+        if i < len(sentence_starts) - 1:
+            end_ms = sentence_starts[i + 1][2]  # 下一句的 start
+        else:
+            # 最后一句：用对应 entry 的 end
+            end_ms = _char_to_entry_end(char_start + len(sent_text), char_map)
 
         # 确保最小持续时间 500ms
         if end_ms - start_ms < 500:
@@ -171,22 +183,21 @@ def split_group_into_sentences(group: list[dict], max_chars: int = 100, ideal_ch
 
         # 如果单句太长，用标点强制再拆
         if len(sent_text) > max_chars:
-            # 估算对应的 entry 范围用于 force_split
             entry_start_idx = 0
             entry_end_idx = len(group) - 1
             offset = 0
-            for i, e in enumerate(group):
+            for j, e in enumerate(group):
                 e_end = offset + len(e['text'])
-                if offset <= sent_start_in_text <= e_end:
-                    entry_start_idx = i
-                if offset <= sent_end_in_text <= e_end:
-                    entry_end_idx = i
+                if offset <= char_start <= e_end:
+                    entry_start_idx = j
+                if offset <= char_start + len(sent_text) <= e_end:
+                    entry_end_idx = j
                     break
                 offset = e_end + 1
             sub_sentences = _force_split_long_sentence(
                 sent_text, group[entry_start_idx:entry_end_idx + 1], max_chars
             )
-            # 修正 force_split 子句的时间范围，保证在 [start_ms, end_ms] 内
+            # 修正 force_split 子句的时间范围
             if sub_sentences:
                 total_chars = sum(len(s['text']) for s in sub_sentences)
                 t = start_ms
@@ -207,8 +218,6 @@ def split_group_into_sentences(group: list[dict], max_chars: int = 100, ideal_ch
                 'end':   end_ms,
                 'text':  sent_text,
             })
-
-        char_pos = sent_end_in_text
 
     return sentences
 
