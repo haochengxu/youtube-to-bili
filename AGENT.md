@@ -45,8 +45,30 @@ python3 daily_run.py
 1. **长视频翻译慢**：5000条字幕约30分钟，不要在前台跑，用 `nohup` 或后台执行
 2. **上传必须传 `--source`**：否则 B 站转载报错 21021
 3. **标题/简介必须从 YouTube 原页面取**：`yt-dlp --get-title` + `--get-description`，不能自己编
-4. **字幕字号**：横屏 EN=44/ZH=52，竖屏 EN=26/ZH=30（`make_ass.py` 自动判断）
+4. **字幕字号**：按视频宽度自适应缩放（`make_ass.py`），基准 1920px 横屏 EN=44/ZH=52，竖屏 EN=26/ZH=30
 5. **B 站风控**：每天不超过 2 个视频
+6. **代理端口**：`127.0.0.1:7890`（不是 7897）
+7. **yt-dlp 需要 JS runtime**：`python3.11 -m yt_dlp --js-runtimes node --remote-components ejs:github`，否则 403
+8. **B 站删视频需人机验证**：无法自动化，用户必须手动在创作者中心删除
+
+## 待改进（TODO）
+
+### 高优先级
+
+1. **merge_srt_v2.py 长视频超时**：Whisper 全量转录 50 分钟视频需要 15-20 分钟，cron job 会超时杀掉。建议：
+   - 加 fast mode：仅用 YouTube SRT + nltk 断句，不跑 Whisper
+   - 阈值：视频 > 10 分钟用 fast mode，≤ 10 分钟用 Whisper
+   - YouTube SRT 虽然时间戳有 3-10s 延迟，但对长视频可接受
+
+2. **bili_upload_v2.py 封面 bug**：ffmpeg 生成封面失败时 `cover_path=""`，传给 `VideoUploader` 会 `FileNotFoundError`。应加空值检查。
+
+3. **daily_run.py --url 重跑全流水线**：应该能跳过已完成的步骤（如已下载、已翻译），只做上传。
+
+### 低优先级
+
+4. **history.json 应由 pipeline 自动维护**：目前靠外部脚本手动写入，容易遗漏。
+5. **pipeline.sh 没有 timeout 保护**：ffmpeg 压制长视频可能跑 30+ 分钟，应根据视频时长动态设置 timeout。
+6. **translate.py 翻译对齐偶尔失败**：批量翻译返回条目数不匹配时只有 warning，没有重试逻辑。
 
 ## 订阅频道
 
