@@ -149,7 +149,7 @@ def get_video_desc(url: str) -> str:
     """抓 YouTube 视频简介，翻译成中文（前200字）"""
     r = subprocess.run(
         YTDLP_BASE + ["--get-description", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
-        capture_output=True, text=True, timeout=30
+        capture_output=True, text=True, timeout=120
     )
     if r.returncode == 0 and r.stdout.strip():
         desc = r.stdout.strip()

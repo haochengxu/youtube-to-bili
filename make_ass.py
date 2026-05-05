@@ -82,16 +82,21 @@ def parse_srt(text: str) -> list[dict]:
 # ── ASS 生成 ──────────────────────────────────────────────────────────────────
 
 def build_ass_header(width: int, height: int) -> str:
-    """根据视频分辨率生成 ASS 头，自动适配竖屏/横屏"""
+    """根据视频分辨率生成 ASS 头，自动适配竖屏/横屏，字号按宽度缩放"""
     is_vertical = height > width
     if is_vertical:
-        # 竖屏：中文在下，英文在上
-        en_size, zh_size = 26, 30
-        en_margin, zh_margin = 100, 50
+        # 竖屏：基准 1080px 宽
+        base_en, base_zh = 26, 30
+        en_margin, zh_margin = 80, 20
     else:
-        # 横屏：中文在下，英文在上
-        en_size, zh_size = 44, 52
-        en_margin, zh_margin = 80, 25
+        # 横屏：基准 1920px 宽
+        base_en, base_zh = 44, 52
+        en_margin, zh_margin = 60, 20
+    # 按宽度缩放字号，基准宽度取 1080（竖屏）或 1920（横屏）
+    ref_w = 1080 if is_vertical else 1920
+    scale = max(0.6, min(1.2, width / ref_w))
+    en_size = max(18, int(base_en * scale))
+    zh_size = max(20, int(base_zh * scale))
 
     return f"""\
 [Script Info]
@@ -104,6 +109,7 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 ; 颜色格式: &HAABBGGRR (AA=00 全不透明)
 ; 白色: &H00FFFFFF  黄色: &H0000FFFF  黑色: &H00000000
+; Alignment: 2=底部居中（英文和中文都在底部，靠 MarginV 区分上下）
 Style: English,Arial,{en_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,{en_margin},1
 Style: Chinese,PingFang SC,{zh_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,20,20,{zh_margin},1
 
