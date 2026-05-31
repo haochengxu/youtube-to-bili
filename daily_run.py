@@ -13,30 +13,35 @@ daily_run.py — 每日自动流水线
     python3 daily_run.py              # 跑一长一短
     python3 daily_run.py --long-only  # 只跑长视频
     python3 daily_run.py --short-only # 只跑短视频
+    python3 daily_run.py --dry-run    # 只打印候选计划，不执行
+    python3 daily_run.py --no-upload  # 同 --dry-run
     python3 daily_run.py --url "https://..." --title "..." # 单独上传
 """
 
 import argparse
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from translator_cli import TranslatorError, run_llm
 
 SCRIPT_DIR = Path(__file__).parent
 HISTORY_FILE = SCRIPT_DIR / "uploaded" / "history.json"
 
-# 代理
-PROXY = "http://127.0.0.1:7890"
+# 可选代理。需要时设置 YOUTUBE_PROXY=http://127.0.0.1:7890；默认直连，避免 cron 因本地代理未启动而失败。
+PROXY = os.environ.get("YOUTUBE_PROXY", "").strip()
 
-# yt-dlp 基础命令（python3.11 + n challenge 修复）
-YTDLP_BASE = [
-    "python3.11", "-m", "yt_dlp",
+# yt-dlp 通用参数（保留 n challenge 修复）
+YTDLP_COMMON_ARGS = [
     "--js-runtimes", "node",
     "--remote-components", "ejs:github",
 ]
+_YTDLP_BASE: Optional[list[str]] = None
 
 # 长视频：Michael Singer 播放列表
 LONG_PLAYLIST = "https://www.youtube.com/playlist?list=PLyOuAoSmZkKoESr2acNWwhznusbBkKXsT"
@@ -77,18 +82,70 @@ def save_history(video_id: str, bvid: str, title: str):
     log(f"✅ history.json 已更新：{video_id} → {bvid}")
 
 
+def detect_ytdlp_base() -> list[str]:
+    """自动探测可用的 yt-dlp 命令。"""
+    candidates: list[list[str]] = []
+    env_cmd = os.environ.get("YTDLP_CMD", "").strip()
+    if env_cmd:
+        candidates.append(shlex.split(env_cmd))
+
+    if shutil.which("yt-dlp"):
+        candidates.append(["yt-dlp"])
+
+    candidates.append([sys.executable, "-m", "yt_dlp"])
+
+    seen: set[tuple[str, ...]] = set()
+    for base_cmd in candidates:
+        key = tuple(base_cmd)
+        if not base_cmd or key in seen:
+            continue
+        seen.add(key)
+        try:
+            result = subprocess.run(
+                base_cmd + ["--version"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return base_cmd + YTDLP_COMMON_ARGS
+
+    raise RuntimeError(
+        "找不到可用的 yt-dlp。请设置 YTDLP_CMD、确保 PATH 中有 yt-dlp，或安装当前 Python 环境的 yt_dlp 模块。"
+    )
+
+
+def get_ytdlp_base() -> list[str]:
+    global _YTDLP_BASE
+    if _YTDLP_BASE is None:
+        _YTDLP_BASE = detect_ytdlp_base()
+        log(f"使用 yt-dlp 命令：{' '.join(_YTDLP_BASE[:-len(YTDLP_COMMON_ARGS)] or _YTDLP_BASE)}")
+    return _YTDLP_BASE
+
+
+def ytdlp_cmd(*args: str) -> list[str]:
+    return get_ytdlp_base() + list(args)
+
+
+def ytdlp_network_args(url: str) -> list[str]:
+    args = ["--no-warnings", "--cookies-from-browser", "chrome"]
+    if PROXY:
+        args.extend(["--proxy", PROXY])
+    args.append(url)
+    return args
+
+
 def get_playlist_videos(url: str, max_items: int = 50) -> list:
     """从播放列表获取视频列表（倒序：最新在前）"""
     log(f"获取播放列表：{url}")
-    cmd = YTDLP_BASE + [
+    cmd = ytdlp_cmd(
         "--flat-playlist",
         "--playlist-end", str(max_items),
         "--print", "%(id)s\t%(title)s\t%(duration)s",
-        "--no-warnings",
-        "--cookies-from-browser", "chrome",
-        "--proxy", PROXY,
-        url,
-    ]
+        *ytdlp_network_args(url),
+    )
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         log(f"[WARN] yt-dlp playlist error: {r.stderr[:200]}")
@@ -134,7 +191,7 @@ def run_pipeline(url: str) -> Optional[str]:
 
     # 找生成的 mp4
     video_id_cmd = subprocess.run(
-        YTDLP_BASE + ["--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
+        ytdlp_cmd("--get-id", *ytdlp_network_args(url)),
         capture_output=True, text=True, timeout=30
     )
     video_id = video_id_cmd.stdout.strip()
@@ -148,7 +205,7 @@ def run_pipeline(url: str) -> Optional[str]:
 def get_video_desc(url: str) -> str:
     """抓 YouTube 视频简介，翻译成中文（前200字）"""
     r = subprocess.run(
-        YTDLP_BASE + ["--get-description", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
+        ytdlp_cmd("--get-description", *ytdlp_network_args(url)),
         capture_output=True, text=True, timeout=120
     )
     if r.returncode == 0 and r.stdout.strip():
@@ -159,12 +216,12 @@ def get_video_desc(url: str) -> str:
             first_para = first_para[:400]
         # 翻译成中文
         prompt = f"把下面的英文视频简介翻译成中文，自然流畅，不超过150字，只输出中文：\n{first_para}"
-        t = subprocess.run(
-            ["hermes", "chat", "-q", prompt, "-Q"],
-            capture_output=True, text=True, timeout=60
-        )
-        if t.returncode == 0 and t.stdout.strip():
-            return t.stdout.strip()
+        try:
+            translated = run_llm(prompt, timeout=60)
+            if translated:
+                return translated
+        except TranslatorError as exc:
+            log(f"[WARN] 简介翻译失败: {exc}")
         return desc  # 翻译失败就用原文
     return ""
 
@@ -227,17 +284,42 @@ def make_title(speaker_zh: str, speaker_en: str, en_title: str, zh_title: str) -
 
 
 def translate_title(en_title: str) -> str:
-    """用 hermes 翻译视频标题"""
+    """用配置的翻译后端翻译视频标题"""
     prompt = (
         f"把下面的英文视频标题翻译成中文，要简洁，保留核心含义，不超过20字，只输出中文标题：\n{en_title}"
     )
-    r = subprocess.run(
-        ["hermes", "chat", "-q", prompt, "-Q"],
-        capture_output=True, text=True, timeout=60
-    )
-    if r.returncode == 0 and r.stdout.strip():
-        return r.stdout.strip()
+    try:
+        translated = run_llm(prompt, timeout=60)
+        if translated:
+            return translated
+    except TranslatorError as exc:
+        log(f"[WARN] 标题翻译失败: {exc}")
     return en_title  # fallback
+
+
+def get_video_id(url: str) -> str:
+    result = subprocess.run(
+        ytdlp_cmd("--get-id", *ytdlp_network_args(url)),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
+def get_video_title(url: str) -> str:
+    result = subprocess.run(
+        ytdlp_cmd("--get-title", *ytdlp_network_args(url)),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
+def log_plan(label: str, url: str, title: str):
+    log(f"[PLAN] {label}: {title}")
+    log(f"[PLAN] URL: {url}")
 
 
 def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str, done: set) -> bool:
@@ -251,11 +333,7 @@ def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str, done:
         return False
 
     # 获取 video_id
-    video_id_cmd = subprocess.run(
-        YTDLP_BASE + ["--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
-        capture_output=True, text=True, timeout=30
-    )
-    video_id = video_id_cmd.stdout.strip()
+    video_id = get_video_id(url)
 
     bvid = upload_to_bili(out_file, bili_title, video_id, source_url=url)
     if bvid:
@@ -264,42 +342,73 @@ def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str, done:
     return False
 
 
+def preflight(check_translator: bool):
+    """启动前自检：代理可达 + 翻译后端鉴权。
+    任一失败立即退出，避免跑到一半（下载+Whisper 都做完）才在翻译步死掉。"""
+    # 1. 代理探活（仅当配置了 YOUTUBE_PROXY）
+    if PROXY:
+        log(f"自检：代理 {PROXY} → YouTube ...")
+        r = subprocess.run(
+            ["curl", "-sI", "--max-time", "10", "-x", PROXY, "https://www.youtube.com"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            log(f"[FATAL] 代理不可用（YouTube 连不上）。Clash 没开？curl exit={r.returncode}")
+            sys.exit(2)
+        log("自检：代理 OK")
+
+    # 2. 翻译后端鉴权探活（claude 后端最容易因长效 token 过期而 401）
+    backend = (os.environ.get("TRANSLATOR") or "").strip().lower()
+    if check_translator and backend == "claude":
+        log("自检：claude 翻译后端鉴权 ...")
+        try:
+            out = run_llm("只回复两个字：OK", timeout=60)
+        except TranslatorError as exc:
+            log(f"[FATAL] claude 后端鉴权/调用失败：{exc}")
+            log("        多半是长效 token 过期，重跑 `claude setup-token` 并更新密钥文件后再试。")
+            sys.exit(3)
+        log(f"自检：claude OK（返回 {out[:20]!r}）")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--short-only", action="store_true")
     parser.add_argument("--url", help="直接指定 YouTube URL（单独上传）")
     parser.add_argument("--title", help="配合 --url 使用的 B 站标题（可选）")
+    parser.add_argument("--dry-run", action="store_true", help="只获取候选视频并打印计划，不运行 pipeline / upload / history")
+    parser.add_argument("--no-upload", action="store_true", help="同 --dry-run，只打印计划")
     args = parser.parse_args()
+    plan_only = args.dry_run or args.no_upload
+
+    preflight(check_translator=not plan_only)
 
     done = load_history()
     log(f"已处理视频数：{len(done)}")
+    if plan_only:
+        log("计划模式：只打印候选视频，不运行 pipeline、不上传、不写 history")
 
     # 单独上传模式
     if args.url:
         url = args.url
         if args.title:
             bili_title = args.title
-            en_title = args.title
-            zh_title = args.title
         else:
             # 自动获取标题并翻译
-            r = subprocess.run(
-                YTDLP_BASE + ["--get-title", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
-                capture_output=True, text=True, timeout=30
-            )
-            en_title = r.stdout.strip()
-            zh_title = translate_title(en_title)
-            bili_title = f"{zh_title} {en_title}"
+            en_title = get_video_title(url)
+            if plan_only:
+                bili_title = en_title
+            else:
+                zh_title = translate_title(en_title)
+                bili_title = f"{zh_title} {en_title}"
         log(f"单独上传模式：{url}")
         log(f"标题：{bili_title}")
+        if plan_only:
+            log_plan("单独上传", url, bili_title)
+            return
         out_file = run_pipeline(url)
         if out_file:
-            video_id_cmd = subprocess.run(
-                YTDLP_BASE + ["--get-id", "--no-warnings", "--cookies-from-browser", "chrome", "--proxy", PROXY, url],
-                capture_output=True, text=True, timeout=30
-            )
-            video_id = video_id_cmd.stdout.strip()
+            video_id = get_video_id(url)
             bvid = upload_to_bili(out_file, bili_title, video_id, source_url=url)
             if bvid:
                 save_history(video_id, bvid, bili_title)
@@ -313,7 +422,10 @@ def main():
         v = pick_next(videos, done, min_dur=LONG_MIN_DURATION)
         if v:
             url = f"https://www.youtube.com/watch?v={v['id']}"
-            process_one(url, LONG_SPEAKER_ZH, LONG_SPEAKER_EN, v["title"], done)
+            if plan_only:
+                log_plan("长视频候选", url, v["title"])
+            else:
+                process_one(url, LONG_SPEAKER_ZH, LONG_SPEAKER_EN, v["title"], done)
         else:
             log("⚠️  长视频：没找到未处理的视频")
 
@@ -324,7 +436,10 @@ def main():
         v = pick_next(videos, done, max_dur=SHORT_MAX_DURATION)
         if v:
             url = f"https://www.youtube.com/watch?v={v['id']}"
-            process_one(url, SHORT_SPEAKER_ZH, SHORT_SPEAKER_EN, v["title"], done)
+            if plan_only:
+                log_plan("短视频候选", url, v["title"])
+            else:
+                process_one(url, SHORT_SPEAKER_ZH, SHORT_SPEAKER_EN, v["title"], done)
         else:
             log("⚠️  短视频：没找到未处理的视频")
 

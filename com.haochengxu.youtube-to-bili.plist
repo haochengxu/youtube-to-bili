@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  youtube-to-bili 每日定时任务（macOS launchd）
+  安装：
+    cp com.haochengxu.youtube-to-bili.plist ~/Library/LaunchAgents/
+    launchctl load  ~/Library/LaunchAgents/com.haochengxu.youtube-to-bili.plist
+  卸载：
+    launchctl unload ~/Library/LaunchAgents/com.haochengxu.youtube-to-bili.plist
+  立即手动触发一次（与定时完全一致）：
+    launchctl start com.haochengxu.youtube-to-bili
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.haochengxu.youtube-to-bili</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/xuhaocheng/youtube-to-bili/run_daily.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/xuhaocheng/youtube-to-bili</string>
+
+    <!-- 每天 08:00 触发 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- 错过触发时间（如关机/睡眠）开机后补跑一次 -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- launchd 层兜底日志（脚本内部还会写 logs/daily-*.log） -->
+    <key>StandardOutPath</key>
+    <string>/Users/xuhaocheng/youtube-to-bili/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/xuhaocheng/youtube-to-bili/logs/launchd.err.log</string>
+</dict>
+</plist>

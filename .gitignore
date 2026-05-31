@@ -11,7 +11,11 @@ cookies.json
 *.ass
 __pycache__/
 *.pyc
+.venv/
 # 运行时数据
 queue.json
 data/
 *.log
+logs/
+# 密钥（含 claude 长效 token），绝不入库
+.env.local
