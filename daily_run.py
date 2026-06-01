@@ -32,6 +32,7 @@ from translator_cli import TranslatorError, run_llm
 
 SCRIPT_DIR = Path(__file__).parent
 HISTORY_FILE = SCRIPT_DIR / "uploaded" / "history.json"
+SKIP_FILE = SCRIPT_DIR / "uploaded" / "skipped.json"  # 私有/不可用视频，跳过且不再重复探测
 
 # 可选代理。需要时设置 YOUTUBE_PROXY=http://127.0.0.1:7890；默认直连，避免 cron 因本地代理未启动而失败。
 PROXY = os.environ.get("YOUTUBE_PROXY", "").strip()
@@ -80,6 +81,28 @@ def save_history(video_id: str, bvid: str, title: str):
     })
     HISTORY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     log(f"✅ history.json 已更新：{video_id} → {bvid}")
+
+
+def load_skipped() -> set:
+    if SKIP_FILE.exists():
+        return {v["video_id"] for v in json.loads(SKIP_FILE.read_text())}
+    return set()
+
+
+def save_skipped(video_id: str, reason: str):
+    SKIP_FILE.parent.mkdir(exist_ok=True)
+    data = []
+    if SKIP_FILE.exists():
+        data = json.loads(SKIP_FILE.read_text())
+    if any(v["video_id"] == video_id for v in data):
+        return
+    data.append({
+        "video_id": video_id,
+        "reason": reason,
+        "skipped_at": datetime.now().isoformat(),
+    })
+    SKIP_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    log(f"⏭️  已记入跳过名单：{video_id}（{reason}）")
 
 
 def detect_ytdlp_base() -> list[str]:
@@ -175,6 +198,31 @@ def pick_next(videos: list, done: set,
             continue
         return v
     return None
+
+
+# 永久不可用的标志（私有/删除/会员专属等）；命中才跳过，其余失败视为暂时性
+_UNAVAILABLE_MARKERS = (
+    "private", "unavailable", "removed", "deleted", "not available",
+    "members-only", "members only", "terminated", "copyright",
+)
+
+
+def check_availability(url: str) -> tuple[bool, str]:
+    """轻探视频是否可下载。返回 (是否可用, 原因)。
+    只有命中"永久不可用"标志才判 False；网络抖动等其它失败一律按可用处理，
+    交给 pipeline 去试/明天重试，避免误把好视频拉黑。"""
+    r = subprocess.run(
+        ytdlp_cmd("--simulate", "--no-warnings", "--quiet", *ytdlp_network_args(url)),
+        capture_output=True, text=True, timeout=90,
+    )
+    if r.returncode == 0:
+        return True, ""
+    err = (r.stderr or "").strip()
+    low = err.lower()
+    if any(m in low for m in _UNAVAILABLE_MARKERS):
+        last = err.splitlines()[-1] if err.splitlines() else err
+        return False, last[:160]
+    return True, ""  # 非"不可用"类失败 → 当作可用，让后续流程去处理/重试
 
 
 def run_pipeline(url: str) -> Optional[str]:
@@ -342,6 +390,41 @@ def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str, done:
     return False
 
 
+def run_branch(label, videos, done, skipped, speaker_zh, speaker_en,
+               plan_only=False, min_dur=0, max_dur=float("inf"),
+               max_unavailable=8):
+    """挑下一个未处理视频处理；遇私有/不可用则跳过并记账，自动顺延下一个。
+    暂时性失败（网络/压制等）则停止，留待明天重试同一视频，不拉黑。"""
+    excluded = done | skipped
+    pool = [
+        v for v in videos
+        if v["id"] not in excluded
+        and (not v["duration"] or min_dur <= v["duration"] <= max_dur)
+    ]
+    skipped_this_run = 0
+    for v in pool:
+        url = f"https://www.youtube.com/watch?v={v['id']}"
+        ok, reason = check_availability(url)
+        if not ok:
+            log(f"{label}：候选不可用，跳过 → {v['title'][:40]}（{reason}）")
+            save_skipped(v["id"], reason)
+            skipped.add(v["id"])
+            skipped_this_run += 1
+            if skipped_this_run >= max_unavailable:
+                log(f"{label}：连续 {max_unavailable} 个不可用，今日停止")
+                return
+            continue
+        if plan_only:
+            log_plan(f"{label}候选", url, v["title"])
+            return
+        if process_one(url, speaker_zh, speaker_en, v["title"], done):
+            done.add(v["id"])
+        else:
+            log(f"{label}：处理失败（疑似暂时性），保留该视频明天重试")
+        return  # 处理过一个（成功或暂时失败）即结束本支线
+    log(f"⚠️  {label}：没找到可处理的新视频")
+
+
 def preflight(check_translator: bool):
     """启动前自检：代理可达 + 翻译后端鉴权。
     任一失败立即退出，避免跑到一半（下载+Whisper 都做完）才在翻译步死掉。"""
@@ -415,33 +498,25 @@ def main():
                 log(f"✅ 完成：{bvid}")
         return
 
+    skipped = load_skipped()
+    if skipped:
+        log(f"跳过名单（私有/不可用）：{len(skipped)} 个")
+
     # 长视频
     if not args.short_only:
         log("=== 长视频（Michael Singer）===")
         videos = get_playlist_videos(LONG_PLAYLIST, max_items=30)
-        v = pick_next(videos, done, min_dur=LONG_MIN_DURATION)
-        if v:
-            url = f"https://www.youtube.com/watch?v={v['id']}"
-            if plan_only:
-                log_plan("长视频候选", url, v["title"])
-            else:
-                process_one(url, LONG_SPEAKER_ZH, LONG_SPEAKER_EN, v["title"], done)
-        else:
-            log("⚠️  长视频：没找到未处理的视频")
+        run_branch("长视频", videos, done, skipped,
+                   LONG_SPEAKER_ZH, LONG_SPEAKER_EN,
+                   plan_only=plan_only, min_dur=LONG_MIN_DURATION)
 
     # 短视频
     if not args.long_only:
         log("=== 短视频（Adyashanti）===")
         videos = get_playlist_videos(SHORT_CHANNEL, max_items=20)
-        v = pick_next(videos, done, max_dur=SHORT_MAX_DURATION)
-        if v:
-            url = f"https://www.youtube.com/watch?v={v['id']}"
-            if plan_only:
-                log_plan("短视频候选", url, v["title"])
-            else:
-                process_one(url, SHORT_SPEAKER_ZH, SHORT_SPEAKER_EN, v["title"], done)
-        else:
-            log("⚠️  短视频：没找到未处理的视频")
+        run_branch("短视频", videos, done, skipped,
+                   SHORT_SPEAKER_ZH, SHORT_SPEAKER_EN,
+                   plan_only=plan_only, max_dur=SHORT_MAX_DURATION)
 
     log("=== daily_run.py 完成 ===")
 
