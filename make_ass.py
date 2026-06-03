@@ -5,12 +5,16 @@ make_ass.py — 英文 SRT + 中文 SRT → 双语 ASS 字幕
 
 样式：
   英文：Arial 26px，白色，黑色描边，位置偏下（上方）
-  中文：PingFang SC 30px，黄色，黑色描边，最下方
+  中文：Heiti SC 30px，黄色，黑色描边，最下方
 """
 
+import argparse
 import sys
 import re
+import os
 from pathlib import Path
+
+from subtitle_display import decide_show_english
 
 
 # ── SRT 解析 ──────────────────────────────────────────────────────────────────
@@ -86,12 +90,14 @@ def build_ass_header(width: int, height: int) -> str:
     is_vertical = height > width
     if is_vertical:
         # 竖屏：基准 1080px 宽
-        base_en, base_zh = 26, 30
-        en_margin, zh_margin = 80, 20
+        base_en, base_zh = 34, 40
+        # 竖屏默认只留中文（见 decide_show_english），英文行省下的位置让中文上移，
+        # 不贴底边、两行更舒展；离画面中部的源字幕仍很远，不会遮挡。
+        en_margin, zh_margin = 110, 80
     else:
         # 横屏：基准 1920px 宽
         base_en, base_zh = 44, 52
-        en_margin, zh_margin = 60, 20
+        en_margin, zh_margin = 120, 24
     # 按宽度缩放字号，基准宽度取 1080（竖屏）或 1920（横屏）
     ref_w = 1080 if is_vertical else 1920
     scale = max(0.6, min(1.2, width / ref_w))
@@ -111,7 +117,7 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 ; 白色: &H00FFFFFF  黄色: &H0000FFFF  黑色: &H00000000
 ; Alignment: 2=底部居中（英文和中文都在底部，靠 MarginV 区分上下）
 Style: English,Arial,{en_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,{en_margin},1
-Style: Chinese,PingFang SC,{zh_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,20,20,{zh_margin},1
+Style: Chinese,Heiti SC,{zh_size},&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,20,20,{zh_margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -123,9 +129,26 @@ def ass_text(raw: str) -> str:
     return raw.replace('\n', r'\N')
 
 
-def build_ass(en_entries: list[dict], zh_entries: list[dict], width: int = 1920, height: int = 1080) -> str:
+def should_show_english(width: int, height: int, requested: str | None = None, burned_subtitles: str | None = None) -> bool:
+    return decide_show_english(
+        width,
+        height,
+        requested=requested or os.environ.get('SHOW_ENGLISH', 'auto'),
+        burned_subtitles=burned_subtitles or os.environ.get('BURNED_SUBTITLES', 'unknown'),
+    )
+
+
+def build_ass(
+    en_entries: list[dict],
+    zh_entries: list[dict],
+    width: int = 1920,
+    height: int = 1080,
+    show_english_request: str | None = None,
+    burned_subtitles: str | None = None,
+) -> str:
     # 用 index 作为 key 对齐中英文
     zh_map = {e['index']: e for e in zh_entries}
+    show_english = should_show_english(width, height, show_english_request, burned_subtitles)
 
     lines = [build_ass_header(width, height)]
     for en in en_entries:
@@ -135,10 +158,11 @@ def build_ass(en_entries: list[dict], zh_entries: list[dict], width: int = 1920,
         if en_start_ms >= en_end_ms:
             continue
         zh = zh_map.get(en['index'])
-        en_line = (
-            f"Dialogue: 0,{en['start']},{en['end']},English,,0,0,0,,{ass_text(en['text'])}"
-        )
-        lines.append(en_line)
+        if show_english:
+            en_line = (
+                f"Dialogue: 0,{en['start']},{en['end']},English,,0,0,0,,{ass_text(en['text'])}"
+            )
+            lines.append(en_line)
         if zh and zh['text'].strip():
             zh_line = (
                 f"Dialogue: 0,{en['start']},{en['end']},Chinese,,0,0,0,,{ass_text(zh['text'])}"
@@ -151,15 +175,21 @@ def build_ass(en_entries: list[dict], zh_entries: list[dict], width: int = 1920,
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) < 4:
-        print("用法: python3 make_ass.py <en.srt> <zh.srt> <output.ass> [width height]", file=sys.stderr)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Generate bilingual ASS subtitles')
+    parser.add_argument('en_srt')
+    parser.add_argument('zh_srt')
+    parser.add_argument('output_ass')
+    parser.add_argument('width', nargs='?', type=int, default=1920)
+    parser.add_argument('height', nargs='?', type=int, default=1080)
+    parser.add_argument('--show-english', default=None)
+    parser.add_argument('--burned-subtitles', default=None)
+    args = parser.parse_args()
 
-    en_path  = Path(sys.argv[1])
-    zh_path  = Path(sys.argv[2])
-    out_path = Path(sys.argv[3])
-    width    = int(sys.argv[4]) if len(sys.argv) > 4 else 1920
-    height   = int(sys.argv[5]) if len(sys.argv) > 5 else 1080
+    en_path  = Path(args.en_srt)
+    zh_path  = Path(args.zh_srt)
+    out_path = Path(args.output_ass)
+    width    = args.width
+    height   = args.height
 
     for p in (en_path, zh_path):
         if not p.exists():
@@ -176,7 +206,17 @@ def main():
     print(f"中文字幕: {len(zh_entries)} 条")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(build_ass(en_entries, zh_entries, width, height), encoding='utf-8-sig')
+    out_path.write_text(
+        build_ass(
+            en_entries,
+            zh_entries,
+            width,
+            height,
+            show_english_request=args.show_english,
+            burned_subtitles=args.burned_subtitles,
+        ),
+        encoding='utf-8-sig',
+    )
     print(f"✅ 双语 ASS 已写入: {out_path}")
 
 
