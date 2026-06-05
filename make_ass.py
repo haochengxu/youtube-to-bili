@@ -91,10 +91,10 @@ def build_ass_header(width: int, height: int) -> str:
     if is_vertical:
         # 竖屏：基准 1080px 宽
         base_en, base_zh = 34, 50
-        # 竖屏默认只留中文（见 decide_show_english）。中文上移进"源英文与底边之间"
-        # 的空白带、字号调大、长句自动换行；源字幕在画面中部，不会被遮挡。
-        # 可用 SUB_ZH_SIZE / SUB_ZH_MARGIN 微调而不改码。
-        en_margin, zh_margin = 110, 150
+        # 竖屏默认只留中文（见 decide_show_english）。中文放在源英文【上方】、人脸下方
+        # （太低会让观众低头看字、错过说话人神情）；字号大、左右收窄、长句多行。
+        # 可用 SUB_ZH_SIZE / SUB_ZH_MARGIN / SUB_ZH_MARGIN_X 微调而不改码。
+        en_margin, zh_margin = 110, 500
     else:
         # 横屏：基准 1920px 宽
         base_en, base_zh = 44, 52
@@ -104,10 +104,12 @@ def build_ass_header(width: int, height: int) -> str:
     scale = max(0.6, min(1.2, width / ref_w))
     en_size = max(18, int(base_en * scale))
     zh_size = max(20, int(base_zh * scale))
-    # 竖屏中文字号/位置可用环境变量微调（不改码）
+    # 竖屏中文字号/位置/左右边距可用环境变量微调（不改码）
+    zh_mx = 20  # 左右边距（横屏保持 20）
     if is_vertical:
         zh_size = int(os.environ.get("SUB_ZH_SIZE", zh_size))
         zh_margin = int(os.environ.get("SUB_ZH_MARGIN", zh_margin))
+        zh_mx = int(os.environ.get("SUB_ZH_MARGIN_X", 90))  # 收窄两边，让中文更早折行
 
     return f"""\
 [Script Info]
@@ -122,7 +124,7 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 ; 白色: &H00FFFFFF  黄色: &H0000FFFF  黑色: &H00000000
 ; Alignment: 2=底部居中（英文和中文都在底部，靠 MarginV 区分上下）
 Style: English,Arial,{en_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,{en_margin},1
-Style: Chinese,Heiti SC,{zh_size},&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,20,20,{zh_margin},1
+Style: Chinese,Heiti SC,{zh_size},&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,{zh_mx},{zh_mx},{zh_margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -141,14 +143,10 @@ def wrap_cjk(text: str, max_chars: int) -> str:
     text = text.strip()
     if max_chars <= 0 or len(text) <= max_chars:
         return text
-    breakable = "，。！？、；：,.!?;: ”’）)】」"
     lines, line = [], ""
     for ch in text:
         line += ch
-        if len(line) >= max_chars and ch in breakable:
-            lines.append(line)
-            line = ""
-        elif len(line) >= max_chars + 4:  # 迟迟没标点，硬断
+        if len(line) >= max_chars:  # 到每行上限就断（中文任意处可断），保证窄而齐
             lines.append(line)
             line = ""
     if line:
@@ -183,7 +181,8 @@ def build_ass(
     if height > width:
         _scale = max(0.6, min(1.2, width / 1080))
         _zh_size = int(os.environ.get("SUB_ZH_SIZE", max(20, int(50 * _scale))))
-        zh_wrap = max(8, (width - 40) // _zh_size - 1)  # 减 MarginL/R 再留 1 字余量
+        _zh_mx = int(os.environ.get("SUB_ZH_MARGIN_X", 90))  # 与样式左右边距一致
+        zh_wrap = max(8, (width - 2 * _zh_mx) // _zh_size - 1)
 
     lines = [build_ass_header(width, height)]
     for en in en_entries:
