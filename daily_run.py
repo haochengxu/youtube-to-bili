@@ -33,6 +33,8 @@ from translator_cli import TranslatorError, run_llm
 SCRIPT_DIR = Path(__file__).parent
 HISTORY_FILE = SCRIPT_DIR / "uploaded" / "history.json"
 SKIP_FILE = SCRIPT_DIR / "uploaded" / "skipped.json"  # 私有/不可用视频，跳过且不再重复探测
+DOUYIN_HISTORY_FILE = SCRIPT_DIR / "uploaded" / "douyin_history.json"  # 已发抖音的短视频
+DOUYIN_SCRIPT = SCRIPT_DIR / "douyin_upload.py"
 
 # 可选代理。需要时设置 YOUTUBE_PROXY=http://127.0.0.1:7890；默认直连，避免 cron 因本地代理未启动而失败。
 PROXY = os.environ.get("YOUTUBE_PROXY", "").strip()
@@ -103,6 +105,47 @@ def save_skipped(video_id: str, reason: str):
     })
     SKIP_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     log(f"⏭️  已记入跳过名单：{video_id}（{reason}）")
+
+
+def load_douyin_history() -> set:
+    if DOUYIN_HISTORY_FILE.exists():
+        return {v["video_id"] for v in json.loads(DOUYIN_HISTORY_FILE.read_text())}
+    return set()
+
+
+def save_douyin_history(video_id: str, title: str):
+    DOUYIN_HISTORY_FILE.parent.mkdir(exist_ok=True)
+    data = []
+    if DOUYIN_HISTORY_FILE.exists():
+        data = json.loads(DOUYIN_HISTORY_FILE.read_text())
+    if any(v["video_id"] == video_id for v in data):
+        return
+    data.append({
+        "video_id": video_id,
+        "title": title,
+        "uploaded_at": datetime.now().isoformat(),
+    })
+    DOUYIN_HISTORY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    log(f"✅ douyin_history 已更新：{video_id}")
+
+
+def upload_to_douyin(video_file: str, title: str, tags: list) -> bool:
+    """调 douyin_upload.py 发抖音。抖音国内站，禁用代理走直连；用可见浏览器避风控。"""
+    log(f"📤 抖音上传：{title}")
+    env = dict(os.environ)
+    for k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+              "http_proxy", "https_proxy", "all_proxy"):
+        env.pop(k, None)
+    cmd = [sys.executable, str(DOUYIN_SCRIPT), "upload", video_file,
+           "--title", title, "--show"]
+    if tags:
+        cmd += ["--tags", *tags]
+    try:
+        r = subprocess.run(cmd, env=env, timeout=1800)
+        return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        log("[WARN] 抖音上传超时")
+        return False
 
 
 def detect_ytdlp_base() -> list[str]:
@@ -370,8 +413,10 @@ def log_plan(label: str, url: str, title: str):
     log(f"[PLAN] URL: {url}")
 
 
-def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str, done: set) -> bool:
-    """完整跑一个视频。返回是否成功。"""
+def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str,
+                done: set, to_douyin: bool = False) -> bool:
+    """完整跑一个视频。返回是否成功（以 B站 上传为准）。
+    to_douyin=True 时额外发一份到抖音（非致命：抖音失败不影响 B站）。"""
     zh_title = translate_title(en_title)
     bili_title = make_title(speaker_zh, speaker_en, en_title, zh_title)
     log(f"标题：{bili_title}")
@@ -384,15 +429,30 @@ def process_one(url: str, speaker_zh: str, speaker_en: str, en_title: str, done:
     video_id = get_video_id(url)
 
     bvid = upload_to_bili(out_file, bili_title, video_id, source_url=url)
+    ok = False
     if bvid:
         save_history(video_id, bvid, bili_title)
-        return True
-    return False
+        ok = True
+
+    # 短视频额外发抖音（非致命）
+    if to_douyin and video_id not in load_douyin_history():
+        dy_title = f"{zh_title}｜{speaker_zh}"[:55]
+        dy_tags = [speaker_zh, "灵性成长", "冥想", "觉察", "当下"]
+        try:
+            if upload_to_douyin(out_file, dy_title, dy_tags):
+                save_douyin_history(video_id, dy_title)
+            else:
+                log(f"[WARN] 抖音上传失败（非致命），可稍后手动重发："
+                    f"python3 douyin_upload.py upload {out_file} --title '{dy_title}' --show")
+        except Exception as exc:
+            log(f"[WARN] 抖音上传异常（非致命）：{exc}")
+
+    return ok
 
 
 def run_branch(label, videos, done, skipped, speaker_zh, speaker_en,
                plan_only=False, min_dur=0, max_dur=float("inf"),
-               max_unavailable=8):
+               max_unavailable=8, to_douyin=False):
     """挑下一个未处理视频处理；遇私有/不可用则跳过并记账，自动顺延下一个。
     暂时性失败（网络/压制等）则停止，留待明天重试同一视频，不拉黑。"""
     excluded = done | skipped
@@ -417,7 +477,7 @@ def run_branch(label, videos, done, skipped, speaker_zh, speaker_en,
         if plan_only:
             log_plan(f"{label}候选", url, v["title"])
             return
-        if process_one(url, speaker_zh, speaker_en, v["title"], done):
+        if process_one(url, speaker_zh, speaker_en, v["title"], done, to_douyin=to_douyin):
             done.add(v["id"])
         else:
             log(f"{label}：处理失败（疑似暂时性），保留该视频明天重试")
@@ -536,7 +596,8 @@ def main():
         videos = get_playlist_videos(SHORT_CHANNEL, max_items=20)
         run_branch("短视频", videos, done, skipped,
                    SHORT_SPEAKER_ZH, SHORT_SPEAKER_EN,
-                   plan_only=plan_only, max_dur=SHORT_MAX_DURATION)
+                   plan_only=plan_only, max_dur=SHORT_MAX_DURATION,
+                   to_douyin=True)
 
     log("=== daily_run.py 完成 ===")
 
