@@ -3,16 +3,16 @@
 translate.py — 英文 SRT → 中文 SRT
 用法: python3 translate.py <input.en.srt>
 输出: 同目录下 <input.zh.srt>
-依赖: claude CLI（`claude -p` pipe 模式）
+依赖: TRANSLATOR=codex|copilot|hermes（默认 codex）
 """
 
+import os
 import sys
 import re
-import subprocess
-import os
 from pathlib import Path
+from translator_cli import TranslatorError, available_backends, run_llm
 
-BATCH_SIZE = 80  # 每批翻译的字幕条数
+BATCH_SIZE = int(os.environ.get("TRANSLATE_BATCH_SIZE", "50"))  # 每批翻译的字幕条数
 
 
 def parse_srt(text: str) -> list[dict]:
@@ -42,7 +42,7 @@ def build_srt(entries: list[dict]) -> str:
 
 
 def translate_batch(entries: list[dict]) -> list[str]:
-    """调用 claude -p 翻译一批字幕，返回对应的中文文本列表"""
+    """调用配置的翻译后端翻译一批字幕，返回对应的中文文本列表"""
     numbered = '\n'.join(
         f"[{i+1}] {e['lines'].replace(chr(10), ' ')}"
         for i, e in enumerate(entries)
@@ -60,35 +60,30 @@ def translate_batch(entries: list[dict]) -> list[str]:
         f"{numbered}"
     )
 
-    result = subprocess.run(
-        ['hermes', 'chat', '-q', prompt, '-Q'],
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"hermes CLI 失败:\n{result.stderr}")
-
-    output = result.stdout.strip()
-    translated = []
+    output = run_llm(prompt, timeout=300)
+    # 按 [N] 编号回填，而不是按出现顺序——否则模型在中间漏/并一行，
+    # 后面全部错位一行（中文配错英文）。用编号对位，缺失的只影响那一条。
+    by_num: dict[int, str] = {}
     for line in output.split('\n'):
         line = line.strip()
         m = re.match(r'^\[(\d+)\]\s*(.*)', line)
         if m:
-            translated.append(m.group(2).strip())
+            by_num[int(m.group(1))] = m.group(2).strip()
 
-    if len(translated) != len(entries):
-        # 宽松兜底：按行数对齐，不足补空
-        print(f"  [警告] 翻译返回 {len(translated)} 条，期望 {len(entries)} 条，尝试对齐")
-        while len(translated) < len(entries):
-            translated.append('')
+    translated = [by_num.get(i + 1, '') for i in range(len(entries))]
+    missing = [i + 1 for i, t in enumerate(translated) if not t]
+    if missing:
+        # 缺失的留空，调用方会回退用英文原文；其余条目编号对得上、不受影响
+        print(f"  [警告] 本批 {len(entries)} 条中 {len(missing)} 条未匹配到译文"
+              f"（编号 {missing[:10]}{'...' if len(missing) > 10 else ''}），缺失处回退英文")
 
-    return translated[:len(entries)]
+    return translated
 
 
 def main():
     if len(sys.argv) < 2:
         print("用法: python3 translate.py <input.en.srt>", file=sys.stderr)
+        print(f"翻译后端: TRANSLATOR={available_backends()}（默认 codex）", file=sys.stderr)
         sys.exit(1)
 
     en_path = Path(sys.argv[1])
@@ -115,12 +110,16 @@ def main():
         batch = entries[batch_start:batch_start + BATCH_SIZE]
         batch_end = batch_start + len(batch)
         print(f"  翻译第 {batch_start+1}–{batch_end} 条...")
-        translated_texts = translate_batch(batch)
+        try:
+            translated_texts = translate_batch(batch)
+        except TranslatorError as exc:
+            print(f"翻译失败: {exc}", file=sys.stderr)
+            sys.exit(1)
         for orig, zh_text in zip(batch, translated_texts):
             zh_entries.append({
                 'index': orig['index'],
                 'timestamp': orig['timestamp'],
-                'lines': zh_text,
+                'lines': zh_text or orig['lines'],
             })
 
     zh_path.write_text(build_srt(zh_entries), encoding='utf-8')
