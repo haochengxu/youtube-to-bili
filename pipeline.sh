@@ -194,9 +194,26 @@ log "ASS 字幕: $ASS_FILE"
 # ── 步骤 5: 压制硬字幕视频 ────────────────────
 log "▶ 步骤 5/6：压制硬字幕视频（crf 18）"
 
+# 烧 ASS 硬字幕必须用带 libass 的 ffmpeg。homebrew 精简版 ffmpeg 不带 libass，
+# keg-only 的 ffmpeg-full 才带。挑第一个支持 ass filter 的，挑不到就清晰报错。
+FFMPEG_SUB=""
+for _cand in \
+    "${FFMPEG_SUBTITLE_BIN:-}" \
+    "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg" \
+    "$(command -v ffmpeg 2>/dev/null)"; do
+  [[ -n "$_cand" && -x "$_cand" ]] || continue
+  if "$_cand" -hide_banner -filters 2>/dev/null | awk '$2=="ass"{f=1} END{exit !f}'; then
+    FFMPEG_SUB="$_cand"; break
+  fi
+done
+[[ -n "$FFMPEG_SUB" ]] || err "找不到带 libass(ass filter) 的 ffmpeg —— 烧字幕需要它。
+  修复：brew upgrade ffmpeg-full（或 brew install ffmpeg-full）。
+  或设置 FFMPEG_SUBTITLE_BIN 指向一个带 libass 的 ffmpeg。"
+log "  压制用 ffmpeg: $FFMPEG_SUB"
+
 OUT_FILE="$OUTPUT/${VIDEO_ID}.mp4"
 # ffmpeg filtergraph 中 ':' 和 '\' 需要转义
-ffmpeg -y \
+"$FFMPEG_SUB" -y \
   -i "$VIDEO_FILE" \
   -vf "ass=${ASS_FILE}" \
   -c:v libx264 -crf 18 -preset slow \

@@ -452,6 +452,26 @@ def preflight(check_translator: bool):
             sys.exit(3)
         log(f"自检：claude OK（返回 {out[:20]!r}）")
 
+    # 3. 烧字幕需要带 libass 的 ffmpeg（homebrew 精简版没有，ffmpeg-full 才有）
+    if check_translator:
+        log("自检：ffmpeg libass(ass filter) ...")
+        ff_ok = False
+        for cand in (os.environ.get("FFMPEG_SUBTITLE_BIN", ""),
+                     "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg",
+                     shutil.which("ffmpeg") or ""):
+            if cand and Path(cand).exists():
+                r = subprocess.run([cand, "-hide_banner", "-filters"],
+                                   capture_output=True, text=True)
+                if any(line.split()[1:2] == ["ass"]
+                       for line in r.stdout.splitlines() if len(line.split()) > 1):
+                    ff_ok = True
+                    break
+        if not ff_ok:
+            log("[FATAL] 找不到带 libass 的 ffmpeg，无法烧字幕。")
+            log("        修复：brew upgrade ffmpeg-full（或 brew install ffmpeg-full）。")
+            sys.exit(4)
+        log("自检：ffmpeg OK")
+
 
 def main():
     parser = argparse.ArgumentParser()
