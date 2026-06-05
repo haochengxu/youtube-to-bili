@@ -157,9 +157,13 @@ log "英文字幕: $EN_SRT"
 log "▶ 步骤 3/5：翻译字幕（英→中）"
 
 ZH_SRT="$SUBTITLES/${VIDEO_ID}.zh.srt"
-if [[ -f "$ZH_SRT" ]]; then
-  log "中文字幕已存在，跳过翻译: $ZH_SRT"
+# 只有当缓存的 zh.srt 条数与当前 en.srt 一致才复用；否则（断句变了）会中英错位，必须重翻。
+EN_CNT=$(grep -cE '^[0-9]+$' "$EN_SRT" 2>/dev/null || echo 0)
+ZH_CNT=$(grep -cE '^[0-9]+$' "$ZH_SRT" 2>/dev/null || echo 0)
+if [[ -f "$ZH_SRT" && "$EN_CNT" -gt 0 && "$EN_CNT" == "$ZH_CNT" ]]; then
+  log "中文字幕已存在且条数一致($ZH_CNT)，跳过翻译: $ZH_SRT"
 else
+  [[ -f "$ZH_SRT" && "$EN_CNT" != "$ZH_CNT" ]] && log "  中英条数不一致(en=$EN_CNT/zh=$ZH_CNT)，重新翻译"
   python3 "$SCRIPT_DIR/translate.py" "$EN_SRT"
   [[ -f "$ZH_SRT" ]] || err "翻译失败，未生成中文字幕"
 fi
