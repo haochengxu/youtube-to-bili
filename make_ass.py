@@ -90,10 +90,11 @@ def build_ass_header(width: int, height: int) -> str:
     is_vertical = height > width
     if is_vertical:
         # 竖屏：基准 1080px 宽
-        base_en, base_zh = 34, 40
-        # 竖屏默认只留中文（见 decide_show_english），英文行省下的位置让中文上移，
-        # 不贴底边、两行更舒展；离画面中部的源字幕仍很远，不会遮挡。
-        en_margin, zh_margin = 110, 80
+        base_en, base_zh = 34, 50
+        # 竖屏默认只留中文（见 decide_show_english）。中文上移进"源英文与底边之间"
+        # 的空白带、字号调大、长句自动换行；源字幕在画面中部，不会被遮挡。
+        # 可用 SUB_ZH_SIZE / SUB_ZH_MARGIN 微调而不改码。
+        en_margin, zh_margin = 110, 150
     else:
         # 横屏：基准 1920px 宽
         base_en, base_zh = 44, 52
@@ -103,6 +104,10 @@ def build_ass_header(width: int, height: int) -> str:
     scale = max(0.6, min(1.2, width / ref_w))
     en_size = max(18, int(base_en * scale))
     zh_size = max(20, int(base_zh * scale))
+    # 竖屏中文字号/位置可用环境变量微调（不改码）
+    if is_vertical:
+        zh_size = int(os.environ.get("SUB_ZH_SIZE", zh_size))
+        zh_margin = int(os.environ.get("SUB_ZH_MARGIN", zh_margin))
 
     return f"""\
 [Script Info]
@@ -129,6 +134,28 @@ def ass_text(raw: str) -> str:
     return raw.replace('\n', r'\N')
 
 
+def wrap_cjk(text: str, max_chars: int) -> str:
+    """按字数给中文强制折行（插入 \\N）。
+    libass 对无空格的中文不会自动换行，长句会两头溢出被裁，必须手动折。
+    优先在标点后断，否则到字数上限硬断。"""
+    text = text.strip()
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    breakable = "，。！？、；：,.!?;: ”’）)】」"
+    lines, line = [], ""
+    for ch in text:
+        line += ch
+        if len(line) >= max_chars and ch in breakable:
+            lines.append(line)
+            line = ""
+        elif len(line) >= max_chars + 4:  # 迟迟没标点，硬断
+            lines.append(line)
+            line = ""
+    if line:
+        lines.append(line)
+    return r"\N".join(lines)
+
+
 def should_show_english(width: int, height: int, requested: str | None = None, burned_subtitles: str | None = None) -> bool:
     return decide_show_english(
         width,
@@ -150,6 +177,14 @@ def build_ass(
     zh_map = {e['index']: e for e in zh_entries}
     show_english = should_show_english(width, height, show_english_request, burned_subtitles)
 
+    # 竖屏：估算中文每行最多多少字，主动给长句折行
+    # （libass 对无空格的中文不会自动换行，长句会两头溢出被裁）
+    zh_wrap = 0
+    if height > width:
+        _scale = max(0.6, min(1.2, width / 1080))
+        _zh_size = int(os.environ.get("SUB_ZH_SIZE", max(20, int(50 * _scale))))
+        zh_wrap = max(8, (width - 40) // _zh_size - 1)  # 减 MarginL/R 再留 1 字余量
+
     lines = [build_ass_header(width, height)]
     for en in en_entries:
         # 跳过时间无效的行（start >= end）
@@ -164,8 +199,9 @@ def build_ass(
             )
             lines.append(en_line)
         if zh and zh['text'].strip():
+            zh_txt = wrap_cjk(zh['text'], zh_wrap) if zh_wrap else ass_text(zh['text'])
             zh_line = (
-                f"Dialogue: 0,{en['start']},{en['end']},Chinese,,0,0,0,,{ass_text(zh['text'])}"
+                f"Dialogue: 0,{en['start']},{en['end']},Chinese,,0,0,0,,{zh_txt}"
             )
             lines.append(zh_line)
 
