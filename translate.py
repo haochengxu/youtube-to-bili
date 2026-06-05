@@ -80,6 +80,16 @@ def translate_batch(entries: list[dict]) -> list[str]:
     return translated
 
 
+def _has_cjk(s: str) -> bool:
+    return any(ord(c) > 0x2e80 for c in s)
+
+
+def _needs_translation(zh_text: str) -> bool:
+    """中文槽位为空、或压根没有中日韩字符（=没翻、英文顶上）→ 需要重翻。
+    合理的纯专名行也会被判 True 而重试，但模型按规则仍会保留英文，无害。"""
+    return (not zh_text.strip()) or (not _has_cjk(zh_text))
+
+
 def main():
     if len(sys.argv) < 2:
         print("用法: python3 translate.py <input.en.srt>", file=sys.stderr)
@@ -105,7 +115,8 @@ def main():
     entries = parse_srt(en_path.read_text(encoding='utf-8'))
     print(f"共 {len(entries)} 条字幕，每批 {BATCH_SIZE} 条")
 
-    zh_entries = []
+    # 初翻：保留原始译文（可能空/英文），先不急着用英文兜底
+    results: dict[str, str] = {}
     for batch_start in range(0, len(entries), BATCH_SIZE):
         batch = entries[batch_start:batch_start + BATCH_SIZE]
         batch_end = batch_start + len(batch)
@@ -116,11 +127,47 @@ def main():
             print(f"翻译失败: {exc}", file=sys.stderr)
             sys.exit(1)
         for orig, zh_text in zip(batch, translated_texts):
-            zh_entries.append({
-                'index': orig['index'],
-                'timestamp': orig['timestamp'],
-                'lines': zh_text or orig['lines'],
-            })
+            results[orig['index']] = zh_text
+
+    # 修复回扫：把"中文槽位仍是英文/空"的条目专门再翻（最多 2 轮）。
+    # 这能救回零星漏译，也能救回整批失败（模型把英文原样吐回）的情况。
+    for rnd in range(1, 3):
+        todo = [e for e in entries if _needs_translation(results.get(e['index'], ''))]
+        if not todo:
+            break
+        print(f"  [修复回扫 第{rnd}轮] 重翻 {len(todo)} 条未翻出/英文顶上的…")
+        fixed = 0
+        for bs in range(0, len(todo), BATCH_SIZE):
+            sub = todo[bs:bs + BATCH_SIZE]
+            try:
+                retx = translate_batch(sub)
+            except TranslatorError as exc:
+                print(f"  [修复回扫] 调用失败，跳过本轮: {exc}", file=sys.stderr)
+                break
+            for orig, zt in zip(sub, retx):
+                if not _needs_translation(zt):   # 只在真翻出中文时才覆盖
+                    results[orig['index']] = zt
+                    fixed += 1
+        print(f"  [修复回扫 第{rnd}轮] 补回 {fixed} 条")
+        if fixed == 0:
+            break
+
+    # 组装：最终仍没翻出的 → 中文留空（make_ass 会跳过空中文，只显示英文行），
+    # 而不是把英文塞进黄色中文位（那个最丑、最像 bug）
+    zh_entries = []
+    still_blank = 0
+    for e in entries:
+        zt = results.get(e['index'], '')
+        if _needs_translation(zt):
+            zt = ''
+            still_blank += 1
+        zh_entries.append({
+            'index': e['index'],
+            'timestamp': e['timestamp'],
+            'lines': zt,
+        })
+    if still_blank:
+        print(f"  注意：{still_blank} 条最终未翻出，已留空（只显示英文，不在中文位塞英文）")
 
     zh_path.write_text(build_srt(zh_entries), encoding='utf-8')
     print(f"✅ 中文字幕已写入: {zh_path}")
