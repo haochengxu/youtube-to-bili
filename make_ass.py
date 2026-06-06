@@ -108,8 +108,10 @@ def build_ass_header(width: int, height: int) -> str:
     zh_mx = 20  # 左右边距（横屏保持 20）
     if is_vertical:
         zh_size = int(os.environ.get("SUB_ZH_SIZE", zh_size))
-        zh_margin = int(os.environ.get("SUB_ZH_MARGIN", zh_margin))
-        zh_mx = int(os.environ.get("SUB_ZH_MARGIN_X", 90))  # 收窄两边，让中文更早折行
+        # 位置/边距按分辨率【比例】算，不能写死像素：在 720x1280 上调好的
+        # 500≈0.39×高、90≈0.125×宽，这样 454x812 等其它竖屏尺寸也不会顶到脸。
+        zh_margin = int(os.environ.get("SUB_ZH_MARGIN", round(height * 0.39)))
+        zh_mx = int(os.environ.get("SUB_ZH_MARGIN_X", round(width * 0.125)))
 
     return f"""\
 [Script Info]
@@ -181,7 +183,7 @@ def build_ass(
     if height > width:
         _scale = max(0.6, min(1.2, width / 1080))
         _zh_size = int(os.environ.get("SUB_ZH_SIZE", max(20, int(50 * _scale))))
-        _zh_mx = int(os.environ.get("SUB_ZH_MARGIN_X", 90))  # 与样式左右边距一致
+        _zh_mx = int(os.environ.get("SUB_ZH_MARGIN_X", round(width * 0.125)))  # 与样式左右边距一致
         zh_wrap = max(8, (width - 2 * _zh_mx) // _zh_size - 1)
 
     lines = [build_ass_header(width, height)]
