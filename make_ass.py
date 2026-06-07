@@ -107,7 +107,9 @@ def build_ass_header(width: int, height: int) -> str:
     # 竖屏中文字号/位置/左右边距可用环境变量微调（不改码）
     zh_mx = 20  # 左右边距（横屏保持 20）
     if is_vertical:
-        zh_size = int(os.environ.get("SUB_ZH_SIZE", zh_size))
+        # 字号也按画面【高度】等比（参考 1280→33px），否则低分辨率短视频(如 358x640)
+        # 被 scale 下限钳到 0.6 会把字撑得过大。
+        zh_size = int(os.environ.get("SUB_ZH_SIZE", max(16, round(height * 0.0258))))
         # 位置/边距按分辨率【比例】算，不能写死像素：在 720x1280 上调好的
         # 500≈0.39×高、90≈0.125×宽，这样 454x812 等其它竖屏尺寸也不会顶到脸。
         zh_margin = int(os.environ.get("SUB_ZH_MARGIN", round(height * 0.39)))
@@ -181,8 +183,7 @@ def build_ass(
     # （libass 对无空格的中文不会自动换行，长句会两头溢出被裁）
     zh_wrap = 0
     if height > width:
-        _scale = max(0.6, min(1.2, width / 1080))
-        _zh_size = int(os.environ.get("SUB_ZH_SIZE", max(20, int(50 * _scale))))
+        _zh_size = int(os.environ.get("SUB_ZH_SIZE", max(16, round(height * 0.0258))))
         _zh_mx = int(os.environ.get("SUB_ZH_MARGIN_X", round(width * 0.125)))  # 与样式左右边距一致
         zh_wrap = max(8, (width - 2 * _zh_mx) // _zh_size - 1)
 

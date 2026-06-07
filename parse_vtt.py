@@ -252,18 +252,12 @@ def main():
 
     sentences = segment_into_sentences(words)
     before = len(sentences)
-    # 可选第 3 参数 = 视频宽度。窄屏（竖屏短视频，≤800px）跳过孤儿合并：
-    # 合并会把多个短语攒成大块、停留更久，快节奏 Shorts 会显得"慢半拍"。
-    # 宽屏才合并（孤儿尾巴单行放得下，体验更好）。
-    width = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 0
-    narrow = 0 < width <= 800
-    if narrow:
-        sentences = fix_overlaps(sentences)
-        print(f"断句结果: {len(sentences)} 条（竖屏：跳过合并，保持紧凑节奏）")
-    else:
-        sentences = merge_orphans(sentences)
-        sentences = fix_overlaps(sentences)
-        print(f"断句结果: {len(sentences)} 条（合并孤儿 {before - len(sentences)} 条）")
+    # 始终合并孤儿（含竖屏短视频）。合并把"半句碎片"拼回完整句，
+    # 这样模型按句意翻译时不会把意思并进一条、导致整体错位一行。
+    # （第 3 参数视频宽度仍接收，留作未来用；不再据此跳过合并。）
+    sentences = merge_orphans(sentences)
+    sentences = fix_overlaps(sentences)
+    print(f"断句结果: {len(sentences)} 条（合并孤儿 {before - len(sentences)} 条）")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(build_srt(sentences), encoding='utf-8')
