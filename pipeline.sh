@@ -85,7 +85,7 @@ log "视频 ID: $VIDEO_ID"
 log "下载视频..."
 ytdlp \
   "${YTDLP_NET_ARGS[@]}" \
-  -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+  -f "bestvideo[height<=1920][width<=1920]+bestaudio/best[height<=1920][width<=1920]/best" \
   -o "$DOWNLOADS/%(id)s.%(ext)s" \
   "$URL"
 
