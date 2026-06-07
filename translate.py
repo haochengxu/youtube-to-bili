@@ -12,7 +12,9 @@ import re
 from pathlib import Path
 from translator_cli import TranslatorError, available_backends, run_llm
 
-BATCH_SIZE = int(os.environ.get("TRANSLATE_BATCH_SIZE", "50"))  # 每批翻译的字幕条数
+BATCH_SIZE = int(os.environ.get("TRANSLATE_BATCH_SIZE", "120"))  # 每批翻译的字幕条数
+# 120 而非 50：claude -p 每次启动开销大，批量越小调用越多越慢（1096 条曾磨 3 小时）。
+# 加大到 120 把调用数砍到约 1/2.4；错位风险由 [N] 编号回填 + 漏译回扫兜底，输出量仍在上限内。
 
 
 def parse_srt(text: str) -> list[dict]:
