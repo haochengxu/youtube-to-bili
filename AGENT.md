@@ -10,9 +10,10 @@ brew install yt-dlp ffmpeg-full
 pip3 install bilibili-api-python requests pillow
 ```
 
-翻译用 `hermes` CLI（需已安装并配置好 API key）。
+翻译默认用 `Codex` CLI，也支持 `TRANSLATOR=copilot` 切到 Copilot。
+如本机 Copilot CLI 参数不同，可设置 `COPILOT_TRANSLATE_CMD` 覆盖。
 
-代理：`http://127.0.0.1:7897`（clash/v2ray，YouTube 和 B 站上传都需要）。
+代理：`http://127.0.0.1:7890`（clash/v2ray，YouTube 和 B 站上传都需要）。
 
 ## 需要手动配置的文件
 
@@ -50,14 +51,19 @@ python3 daily_run.py
 6. **代理端口**：`127.0.0.1:7890`（不是 7897）
 7. **yt-dlp 需要 JS runtime**：`python3.11 -m yt_dlp --js-runtimes node --remote-components ejs:github`，否则 403
 8. **B 站删视频需人机验证**：无法自动化，用户必须手动在创作者中心删除
+9. **历史上传体检**：`python3 audit_uploaded.py` 可检查已上传视频对应的本地字幕、ASS 和成品文件
+10. **字幕模式**：`SUBTITLE_MODE=auto` 默认按时长选择；>10 分钟用 fast（YouTube SRT 断句，不跑 Whisper），短视频用 precise（Whisper 词级时间戳）
 
 ## 待改进（TODO）
 
+详细的 Copilot/agent 实现拆解见 `COPILOT_TASKS.md`。优先级建议：先做短视频英文字幕决策和学习总结，再做 B 站替换准备层，最后做多平台发布与抖音 dry-run。
+
 ### 高优先级
 
-1. **merge_srt_v2.py 长视频超时**：Whisper 全量转录 50 分钟视频需要 15-20 分钟，cron job 会超时杀掉。建议：
-   - 加 fast mode：仅用 YouTube SRT + nltk 断句，不跑 Whisper
+1. **merge_srt_v2.py 长视频超时**：Whisper 全量转录 50 分钟视频需要 15-20 分钟，cron job 会超时杀掉。已加 `SUBTITLE_MODE=auto|fast|precise`：
+   - fast mode：仅用 YouTube SRT + 断句，不跑 Whisper
    - 阈值：视频 > 10 分钟用 fast mode，≤ 10 分钟用 Whisper
+   - 待实测：长视频 fast mode 的实际时间轴是否可接受
    - YouTube SRT 虽然时间戳有 3-10s 延迟，但对长视频可接受
 
 2. **bili_upload_v2.py 封面 bug**：ffmpeg 生成封面失败时 `cover_path=""`，传给 `VideoUploader` 会 `FileNotFoundError`。应加空值检查。

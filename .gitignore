@@ -22,3 +22,6 @@ logs/
 .gstack/
 # 抖音登录态（cookie/storage），绝不入库
 .douyin_profile/
+# 临时截图 / 自动生成的逐视频学习摘要（按需重生成，不入库）
+tmp/
+summaries/
