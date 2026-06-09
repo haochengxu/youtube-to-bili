@@ -55,7 +55,7 @@ async def upload(args):
         "open_elec": 0,
         "origin_state": 0,
         "subtitles": {"lan": "", "open": 0},
-        "tag": args.tag or "英语学习,AI",
+        "tag": args.tag or "灵性成长,冥想,双语字幕",
         "tid": args.tid,
         "title": args.title[:80],
         "up_close_danmaku": False,
@@ -106,7 +106,7 @@ def main():
     parser.add_argument("video", help="Video file path")
     parser.add_argument("--title", required=True, help="Video title")
     parser.add_argument("--desc", default="", help="Video description")
-    parser.add_argument("--tag", default="英语学习,AI", help="Tags, comma separated")
+    parser.add_argument("--tag", default="灵性成长,冥想,双语字幕", help="Tags, comma separated")
     parser.add_argument("--source", default="", help="Source URL (for repost)")
     parser.add_argument("--tid", type=int, default=95, help="Category ID (default: 95 tech)")
     parser.add_argument("--cover", default="", help="Cover image path")

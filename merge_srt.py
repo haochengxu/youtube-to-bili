@@ -17,12 +17,7 @@ import sys
 import re
 from pathlib import Path
 
-import nltk
-try:
-    nltk.data.find('tokenizers/punkt_tab')
-except LookupError:
-    nltk.download('punkt_tab', quiet=True)
-from nltk.tokenize import sent_tokenize
+from sentence_splitter import sent_tokenize
 
 
 def srt_ts_to_ms(ts: str) -> int:
@@ -70,6 +65,7 @@ def parse_srt(text: str) -> list[dict]:
 
 GAP_THRESHOLD_MS = 500     # 间隔 > 500ms 视为语音停顿
 MAX_SENTENCE_CHARS = 100   # 单句超过此长度时强制再拆（默认值，会被视频宽度覆盖）
+SENTENCE_END_CHARS = '.?!…,，。？！'
 
 # 根据视频宽度计算字幕字符数限制
 def get_char_limits(width: int) -> tuple[int, int]:
@@ -78,6 +74,106 @@ def get_char_limits(width: int) -> tuple[int, int]:
     max_c = max(20, int(width / 24))
     ideal_c = max(15, int(max_c * 0.75))
     return max_c, ideal_c
+
+
+def _tokenize_text(text: str) -> list[str]:
+    return text.split()
+
+
+def _normalize_token(token: str) -> str:
+    return re.sub(r'^\W+|\W+$', '', token).lower()
+
+
+def _tokens_equal(left: list[str], right: list[str]) -> bool:
+    if len(left) != len(right):
+        return False
+    return [_normalize_token(token) for token in left] == [_normalize_token(token) for token in right]
+
+
+def _find_suffix_prefix_overlap(left: list[str], right: list[str]) -> int:
+    max_overlap = min(len(left), len(right))
+    for size in range(max_overlap, 0, -1):
+        if _tokens_equal(left[-size:], right[:size]):
+            return size
+    return 0
+
+
+def _is_sentence_tail(token: str) -> bool:
+    return bool(token) and token[-1] in SENTENCE_END_CHARS
+
+
+def _entries_touch(left: dict, right: dict, slack_ms: int = 250) -> bool:
+    return right['start'] <= left['end'] + slack_ms
+
+
+def _should_trim_prefix_overlap(prev_tokens: list[str], current_tokens: list[str], overlap_size: int) -> bool:
+    remaining = len(current_tokens) - overlap_size
+    if overlap_size <= 0 or remaining <= 0:
+        return False
+
+    if overlap_size >= 2:
+        return True
+
+    if len(prev_tokens) < 3:
+        return False
+    if not (_is_sentence_tail(prev_tokens[-1]) or _is_sentence_tail(current_tokens[0])):
+        return False
+    if remaining < 2:
+        return False
+    if remaining >= 1 and _normalize_token(current_tokens[0]) == _normalize_token(current_tokens[1]):
+        return False
+    return True
+
+
+def _should_drop_bridge_entry(prev_tokens: list[str], current_tokens: list[str], next_tokens: list[str]) -> bool:
+    if len(prev_tokens) < 2 or len(current_tokens) <= len(prev_tokens):
+        return False
+    if not _tokens_equal(current_tokens[-len(prev_tokens):], prev_tokens):
+        return False
+
+    prefix_tokens = current_tokens[:-len(prev_tokens)]
+    if len(prefix_tokens) < 2 or len(next_tokens) < len(prefix_tokens):
+        return False
+    if _is_sentence_tail(prefix_tokens[-1]):
+        return False
+    return _tokens_equal(next_tokens[:len(prefix_tokens)], prefix_tokens)
+
+
+def clean_carry_over_entries(entries: list[dict]) -> list[dict]:
+    """
+    清理 YouTube 滚动字幕中的串句污染：
+      1. 上一句尾部被拼到下一条开头；
+      2. 上一句整句残留被拼到下一条结尾；
+      3. 中间桥接条目同时带有下一句前缀和上一句残留。
+    """
+    cleaned: list[dict] = []
+
+    for index, entry in enumerate(entries):
+        current = dict(entry)
+        current_tokens = _tokenize_text(current['text'])
+        if not current_tokens:
+            continue
+
+        prev = cleaned[-1] if cleaned else None
+        next_entry = entries[index + 1] if index + 1 < len(entries) else None
+
+        if prev and next_entry and _entries_touch(prev, current) and _entries_touch(current, next_entry):
+            prev_tokens = _tokenize_text(prev['text'])
+            next_tokens = _tokenize_text(next_entry['text'])
+            if _should_drop_bridge_entry(prev_tokens, current_tokens, next_tokens):
+                continue
+
+        if prev and _entries_touch(prev, current):
+            prev_tokens = _tokenize_text(prev['text'])
+            overlap_size = _find_suffix_prefix_overlap(prev_tokens, current_tokens)
+            if _should_trim_prefix_overlap(prev_tokens, current_tokens, overlap_size):
+                current_tokens = current_tokens[overlap_size:]
+
+        current['text'] = ' '.join(current_tokens).strip()
+        if current['text']:
+            cleaned.append(current)
+
+    return cleaned
 
 
 def group_by_gap(entries: list[dict]) -> list[list[dict]]:
@@ -306,6 +402,7 @@ def merge_entries(entries: list[dict], max_chars: int = 100, ideal_chars: int = 
     if not entries:
         return []
 
+    entries = clean_carry_over_entries(entries)
     groups = group_by_gap(entries)
     print(f"  语音段分组: {len(groups)} 组（原始 {len(entries)} 条）")
 

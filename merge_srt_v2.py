@@ -11,12 +11,7 @@ import os
 import re
 from pathlib import Path
 
-import nltk
-try:
-    nltk.data.find('tokenizers/punkt_tab')
-except LookupError:
-    nltk.download('punkt_tab', quiet=True)
-from nltk.tokenize import sent_tokenize
+from sentence_splitter import sent_tokenize
 
 
 def whisper_transcribe(video_path: str, model_size: str = "base") -> list[dict]:
@@ -62,6 +57,126 @@ def build_srt(sentences: list[dict]) -> str:
     return '\n\n'.join(blocks) + '\n'
 
 
+def _normalize_token(token: str) -> str:
+    return token.lower().strip('.,!?;:"\'()[]{}')
+
+
+def split_word_indices_by_chars(words: list[str], max_chars: int) -> list[tuple[int, int]]:
+    """Split a word list into max_chars chunks, returning half-open word ranges."""
+    if not words:
+        return []
+
+    chunks: list[tuple[int, int]] = []
+    start = 0
+    current = ""
+    for i, word in enumerate(words):
+        candidate = f"{current} {word}".strip() if current else word
+        if current and len(candidate) > max_chars:
+            chunks.append((start, i))
+            start = i
+            current = word
+        else:
+            current = candidate
+
+    chunks.append((start, len(words)))
+    return chunks
+
+
+def fix_sentence_timings(sentences: list[dict], gap_ms: int = 50, min_duration_ms: int = 350) -> list[dict]:
+    """
+    Keep sentence starts anchored to speech. When two captions overlap, trim the
+    previous end before moving the next start, because pushing starts later is
+    what makes subtitles feel out of sync.
+    """
+    if not sentences:
+        return sentences
+
+    for i, sentence in enumerate(sentences):
+        if sentence['end'] - sentence['start'] < min_duration_ms:
+            sentence['end'] = sentence['start'] + min_duration_ms
+
+        if i == 0:
+            continue
+
+        prev = sentences[i - 1]
+        target_prev_end = sentence['start'] - gap_ms
+        if prev['end'] > target_prev_end:
+            prev['end'] = max(prev['start'] + min_duration_ms, target_prev_end)
+
+        if prev['end'] > sentence['start']:
+            sentence['start'] = prev['end']
+            if sentence['end'] - sentence['start'] < min_duration_ms:
+                sentence['end'] = sentence['start'] + min_duration_ms
+
+    return sentences
+
+
+def build_sentences_from_words(words: list[dict], video_width: int) -> list[dict]:
+    max_chars, _ideal_chars = get_char_limits(video_width)
+
+    full_text = ' '.join(w['word'] for w in words)
+    raw_sentences = sent_tokenize(full_text)
+    print(f"   断句: {len(raw_sentences)} 句")
+
+    sentences = []
+    word_idx = 0
+
+    for sent_text in raw_sentences:
+        sent_text = sent_text.strip()
+        if not sent_text:
+            continue
+
+        sent_words = sent_text.split()
+        best_start = word_idx
+        best_count = 0
+
+        for offset in range(0, 5):
+            start = word_idx + offset
+            if start >= len(words):
+                break
+            count = 0
+            for j, sw in enumerate(sent_words):
+                if start + j >= len(words):
+                    break
+                if _normalize_token(sw) == _normalize_token(words[start + j]['word']):
+                    count += 1
+            if count > best_count:
+                best_count = count
+                best_start = start
+
+        matched_count = min(len(sent_words), len(words) - best_start)
+        if matched_count <= 0:
+            start_ms = sentences[-1]['end'] if sentences else 0
+            sentences.append({'start': start_ms, 'end': start_ms + 1000, 'text': sent_text})
+            continue
+
+        matched_words = words[best_start:best_start + matched_count]
+        word_idx = best_start + matched_count
+
+        if len(sent_text) > max_chars:
+            for chunk_start, chunk_end in split_word_indices_by_chars(sent_words, max_chars):
+                if chunk_start >= matched_count:
+                    break
+                actual_end = min(chunk_end, matched_count)
+                chunk_words = sent_words[chunk_start:chunk_end]
+                chunk_timed_words = matched_words[chunk_start:actual_end]
+                if not chunk_words or not chunk_timed_words:
+                    continue
+                sentences.append({
+                    'start': chunk_timed_words[0]['start'],
+                    'end': chunk_timed_words[-1]['end'],
+                    'text': ' '.join(chunk_words),
+                })
+        else:
+            sentences.append({
+                'start': matched_words[0]['start'],
+                'end': matched_words[-1]['end'],
+                'text': sent_text,
+            })
+
+    return fix_sentence_timings(sentences)
+
+
 def main():
     if len(sys.argv) < 3:
         print("用法: python3 merge_srt_v2.py <video.mp4> <output.srt> [video_width]")
@@ -79,89 +194,10 @@ def main():
     words = whisper_transcribe(str(video_path), "base")
     print(f"   识别到 {len(words)} 个词")
 
-    # 2. 拼接全文，用 nltk 断句
-    full_text = ' '.join(w['word'] for w in words)
-    raw_sentences = sent_tokenize(full_text)
-    print(f"   断句: {len(raw_sentences)} 句")
+    # 2. 断句，并直接用词级时间戳给每条字幕定时
+    sentences = build_sentences_from_words(words, video_width)
 
-    # 3. 为每个句子找到对应的词时间范围
-    sentences = []
-    word_idx = 0
-
-    for sent_text in raw_sentences:
-        sent_text = sent_text.strip()
-        if not sent_text:
-            continue
-
-        sent_words = sent_text.split()
-        # 在 words[word_idx:] 中找这组词
-        # 用简单的滑动窗口匹配
-        best_start = word_idx
-        best_count = 0
-
-        for offset in range(0, 5):
-            start = word_idx + offset
-            if start >= len(words):
-                break
-            count = 0
-            for j, sw in enumerate(sent_words):
-                if start + j >= len(words):
-                    break
-                if sw.lower().strip('.,!?;:') == words[start + j]['word'].lower().strip('.,!?;:'):
-                    count += 1
-            if count > best_count:
-                best_count = count
-                best_start = start
-
-        # 取匹配到的词的时间范围
-        matched_count = min(len(sent_words), len(words) - best_start)
-        if matched_count > 0:
-            start_ms = words[best_start]['start']
-            end_ms = words[best_start + matched_count - 1]['end']
-            word_idx = best_start + matched_count
-        else:
-            start_ms = sentences[-1]['end'] if sentences else 0
-            end_ms = start_ms + 1000
-
-        # 如果超长，拆分
-        if len(sent_text) > max_chars:
-            # 按词数比例拆分
-            sub_texts = []
-            words_in_sent = sent_text.split()
-            chunk = ''
-            for w in words_in_sent:
-                if chunk and len(chunk) + len(w) + 1 > max_chars:
-                    sub_texts.append(chunk.strip())
-                    chunk = w
-                else:
-                    chunk = (chunk + ' ' + w).strip() if chunk else w
-            if chunk.strip():
-                sub_texts.append(chunk.strip())
-
-            # 按比例分配时间
-            total_chars = sum(len(t) for t in sub_texts)
-            t = start_ms
-            for si, st in enumerate(sub_texts):
-                ratio = len(st) / max(1, total_chars)
-                dur = max(500, int((end_ms - start_ms) * ratio))
-                if si == len(sub_texts) - 1:
-                    sentences.append({'start': int(t), 'end': end_ms, 'text': st})
-                else:
-                    sentences.append({'start': int(t), 'end': int(t + dur), 'text': st})
-                    t += dur
-        else:
-            if end_ms - start_ms < 500:
-                end_ms = start_ms + 500
-            sentences.append({'start': start_ms, 'end': end_ms, 'text': sent_text})
-
-    # 4. 后处理：确保单调递增
-    for i in range(1, len(sentences)):
-        if sentences[i]['start'] < sentences[i-1]['end'] + 100:
-            sentences[i]['start'] = sentences[i-1]['end'] + 100
-        if sentences[i]['end'] - sentences[i]['start'] < 500:
-            sentences[i]['end'] = sentences[i]['start'] + 500
-
-    # 5. 输出
+    # 3. 输出
     out_path.write_text(build_srt(sentences), encoding='utf-8')
     print(f"✅ 已写入 {len(sentences)} 条: {out_path}")
 
