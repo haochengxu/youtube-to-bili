@@ -169,6 +169,14 @@ else
 fi
 log "中文字幕: $ZH_SRT"
 
+# 短视频（竖屏）：把整句中文按词级子片段时间回填，避免整句提前。
+# parse_vtt 在竖屏时写了 <id>.en.subsegs.json；据此把 en/zh.srt 改为细粒度。
+SUBSEGS="$SUBTITLES/${VIDEO_ID}.en.subsegs.json"
+if [[ "$VID_W" -le 800 && -f "$SUBSEGS" ]]; then
+  log "  竖屏：词级回填中文时间轴"
+  python3 "$SCRIPT_DIR/resplit.py" "$EN_SRT" "$ZH_SRT" "$SUBSEGS" "$EN_SRT" "$ZH_SRT"
+fi
+
 # ── 步骤 4: 生成双语 ASS 字幕 ─────────────────
 log "▶ 步骤 4/6：生成双语 ASS 字幕"
 

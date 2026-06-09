@@ -212,6 +212,29 @@ def merge_orphans(sentences: list[dict]) -> list[dict]:
     return merged
 
 
+def merge_orphans_grouped(sentences: list[dict]) -> list[dict]:
+    """同 merge_orphans，但每条合并句保留其原始子片段（含词级时间）于 'subs'。
+    用于短视频：句子级合并去翻译，再按子片段时间把中文回填，避免整句提前。"""
+    if not sentences:
+        return []
+    groups = [{'start': sentences[0]['start'], 'end': sentences[0]['end'],
+               'text': sentences[0]['text'], 'subs': [dict(sentences[0])]}]
+    for s in sentences[1:]:
+        prev = groups[-1]
+        combined = f"{prev['text']} {s['text']}"
+        prev_unfinished = not SENTENCE_FINISHED.search(prev['text'].strip())
+        within_chars = len(combined) <= MERGE_MAX_CHARS
+        within_dur = (s['end'] - prev['start']) <= MERGE_MAX_DURATION_MS
+        if prev_unfinished and within_chars and within_dur:
+            prev['text'] = combined
+            prev['end'] = s['end']
+            prev['subs'].append(dict(s))
+        else:
+            groups.append({'start': s['start'], 'end': s['end'],
+                           'text': s['text'], 'subs': [dict(s)]})
+    return groups
+
+
 def fix_overlaps(sentences: list[dict], gap_ms: int = 50) -> list[dict]:
     for i in range(len(sentences) - 1):
         if sentences[i]['end'] > sentences[i+1]['start'] - gap_ms:
@@ -252,15 +275,31 @@ def main():
 
     sentences = segment_into_sentences(words)
     before = len(sentences)
-    # 始终合并孤儿（含竖屏短视频）。合并把"半句碎片"拼回完整句，
-    # 这样模型按句意翻译时不会把意思并进一条、导致整体错位一行。
-    # （第 3 参数视频宽度仍接收，留作未来用；不再据此跳过合并。）
-    sentences = merge_orphans(sentences)
-    sentences = fix_overlaps(sentences)
-    print(f"断句结果: {len(sentences)} 条（合并孤儿 {before - len(sentences)} 条）")
+    width = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 0
+    narrow = 0 < width <= 800
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(build_srt(sentences), encoding='utf-8')
+
+    if narrow:
+        # 短视频：合并成整句去翻译（修对齐），同时写 sidecar 记录每句的子片段
+        # （词级时间），翻译后由 resplit.py 把中文按子片段时间回填，避免整句提前。
+        import json
+        groups = merge_orphans_grouped(sentences)
+        merged = fix_overlaps([{'start': g['start'], 'end': g['end'], 'text': g['text']}
+                               for g in groups])
+        sidecar = out_path.with_name(out_path.stem + '.subsegs.json')
+        json.dump(
+            [[{'start': s['start'], 'end': s['end'], 'text': s['text']} for s in g['subs']]
+             for g in groups],
+            open(sidecar, 'w', encoding='utf-8'), ensure_ascii=False)
+        out_path.write_text(build_srt(merged), encoding='utf-8')
+        print(f"断句结果: {len(merged)} 条（竖屏：合并翻译+词级回填，子片段表 {sidecar.name}）")
+    else:
+        # 长视频：合并孤儿即可（整句一起显示，无逐词参照，不需回填）
+        sentences = merge_orphans(sentences)
+        sentences = fix_overlaps(sentences)
+        out_path.write_text(build_srt(sentences), encoding='utf-8')
+        print(f"断句结果: {len(sentences)} 条（合并孤儿 {before - len(sentences)} 条）")
     print(f"✅ 已写入: {out_path}")
 
 
