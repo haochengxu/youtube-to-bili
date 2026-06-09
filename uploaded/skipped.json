@@ -1,0 +1,17 @@
+[
+  {
+    "video_id": "goVMUe6yJrA",
+    "reason": "ERROR: [youtube] goVMUe6yJrA: Video unavailable. This video is private",
+    "skipped_at": "2026-06-01T12:24:14.175325"
+  },
+  {
+    "video_id": "UjN9fHFHNEw",
+    "reason": "ERROR: [youtube] UjN9fHFHNEw: Video unavailable. This video is private",
+    "skipped_at": "2026-06-04T08:00:20.535052"
+  },
+  {
+    "video_id": "GU1sVkx_pII",
+    "reason": "ERROR: [youtube] GU1sVkx_pII: Video unavailable. This video is private",
+    "skipped_at": "2026-06-08T08:00:21.388899"
+  }
+]
