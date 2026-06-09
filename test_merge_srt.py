@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from merge_srt import (
     parse_srt, merge_entries, fix_overlaps, build_srt,
-    get_char_limits, group_by_gap, split_group_into_sentences
+    clean_carry_over_entries, get_char_limits, group_by_gap, split_group_into_sentences
 )
 
 
@@ -50,6 +50,10 @@ def process_entries(entries: list[dict], max_chars: int = 80) -> list[dict]:
     sentences = merge_entries(entries, max_chars, int(max_chars * 0.75))
     sentences = fix_overlaps(sentences)
     return sentences
+
+
+def sentence_texts(sentences: list[dict]) -> list[str]:
+    return [sentence['text'] for sentence in sentences]
 
 
 # ──────────────────────────────────────────────
@@ -331,6 +335,68 @@ def test_real_world_long_video():
     print(f"✅ test_real_world_long_video ({len(sentences)} sentences)")
 
 
+def test_carry_over_prefix_fragment_before_complete_sentence():
+    """前一条尾词残留在下一条开头时，应去掉残缺前缀。"""
+    entries = [
+        {'start': 0, 'end': 1500, 'text': 'First sentence ends here?'},
+        {'start': 1200, 'end': 2600, 'text': 'here? Next sentence starts cleanly.'},
+    ]
+    cleaned = clean_carry_over_entries(entries)
+    assert [entry['text'] for entry in cleaned] == [
+        'First sentence ends here?',
+        'Next sentence starts cleanly.',
+    ]
+
+
+def test_carry_over_bridge_entry_is_dropped():
+    """上一句残留被拼进下一句时，应丢掉中间桥接污染条目。"""
+    entries = [
+        {'start': 0, 'end': 1000, 'text': 'Previous sentence is complete.'},
+        {'start': 1000, 'end': 2000, 'text': 'Next sentence begins with Previous sentence is complete.'},
+        {'start': 1500, 'end': 2500, 'text': 'Next sentence begins with fresh words.'},
+    ]
+    cleaned = clean_carry_over_entries(entries)
+    assert [entry['text'] for entry in cleaned] == [
+        'Previous sentence is complete.',
+        'Next sentence begins with fresh words.',
+    ]
+    sentences = process_entries(entries)
+    assert sentence_texts(sentences) == [
+        'Previous sentence is complete.',
+        'Next sentence begins with fresh words.',
+    ]
+
+
+def test_carry_over_tail_word_is_removed_from_next_entry():
+    """下一条开头若只带了上一句尾词，不应拆出孤立脏句。"""
+    entries = [
+        {'start': 0, 'end': 1800, 'text': 'Complete thought finishes now?'},
+        {'start': 1600, 'end': 3200, 'text': 'now? Fresh thought follows after.'},
+    ]
+    cleaned = clean_carry_over_entries(entries)
+    assert [entry['text'] for entry in cleaned] == [
+        'Complete thought finishes now?',
+        'Fresh thought follows after.',
+    ]
+    assert sentence_texts(process_entries(entries)) == [
+        'Complete thought finishes now?',
+        'Fresh thought follows after.',
+    ]
+
+
+def test_legitimate_repeated_words_are_preserved():
+    """合法的重复词不应被误判为 carry-over。"""
+    entries = [
+        {'start': 0, 'end': 1500, 'text': 'Are you okay?'},
+        {'start': 1200, 'end': 2800, 'text': "okay? Okay, let's continue."},
+    ]
+    cleaned = clean_carry_over_entries(entries)
+    assert [entry['text'] for entry in cleaned] == [
+        'Are you okay?',
+        "okay? Okay, let's continue.",
+    ]
+
+
 # ──────────────────────────────────────────────
 # 运行所有测试
 # ──────────────────────────────────────────────
@@ -350,6 +416,10 @@ def run_all_tests():
         test_gap_threshold_grouping,
         test_real_world_short_video,
         test_real_world_long_video,
+        test_carry_over_prefix_fragment_before_complete_sentence,
+        test_carry_over_bridge_entry_is_dropped,
+        test_carry_over_tail_word_is_removed_from_next_entry,
+        test_legitimate_repeated_words_are_preserved,
     ]
     
     passed = 0
